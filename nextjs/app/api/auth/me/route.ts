@@ -5,7 +5,7 @@ import { getEmployees } from '@/lib/db';
 export async function GET(req: NextRequest) {
   const session = getSessionFromRequest(req);
   if (!session) {
-    return NextResponse.json({ authenticated: false, user: null, employee: null }, { status: 401 });
+    return NextResponse.json({ authenticated: false, user: null, employee: null }, { status: 200 });
   }
 
   let employee = null;

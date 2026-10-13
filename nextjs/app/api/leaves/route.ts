@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getLeaves, saveLeaves, getEmployees, addActivity } from '@/lib/db';
+import { getLeaves, saveLeaves, getEmployees, addActivity, readRawState } from '@/lib/db';
 import { getSessionFromRequest } from '@/lib/auth';
 import { LeaveRequest } from '@/types';
 
@@ -41,11 +41,42 @@ export async function POST(req: NextRequest) {
     const employees = getEmployees();
     const emp = employees.find(e => e.id === empId);
 
-    // Calculate days
-    const fromDate = new Date(from);
-    const toDate = new Date(to);
-    const diffTime = Math.abs(toDate.getTime() - fromDate.getTime());
-    const days = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+    // Calculate actual working days excluding company holidays & week-offs
+    const rawState = readRawState();
+    let holidays: any[] = [];
+    let weekoff = { sunday: true, sats: [2, 4] };
+    try {
+      if (rawState['hrms_holidays']) holidays = JSON.parse(rawState['hrms_holidays']);
+      if (rawState['hrms_weekoff']) weekoff = JSON.parse(rawState['hrms_weekoff']);
+    } catch {}
+
+    let billableDays = 0;
+    const cur = new Date(from);
+    const end = new Date(to);
+    while (cur <= end) {
+      const dStr = cur.toISOString().split('T')[0];
+      const dayOfWeek = cur.getDay(); // 0 is Sunday, 6 is Saturday
+      const isSunday = dayOfWeek === 0 && weekoff.sunday;
+      
+      const dayOfMonth = cur.getDate();
+      const satIndex = Math.ceil(dayOfMonth / 7);
+      const isSatOff = dayOfWeek === 6 && (weekoff.sats || []).includes(satIndex);
+      
+      const isHoliday = holidays.some(h => {
+        if (!h.date) return false;
+        if (h.yearly) return h.date.slice(5) === dStr.slice(5);
+        return h.date === dStr;
+      });
+
+      if (!isSunday && !isSatOff && !isHoliday) {
+        billableDays++;
+      }
+      cur.setDate(cur.getDate() + 1);
+    }
+
+    // Default to at least 1 day if entirely on weekend/holiday or raw diff
+    const rawDays = Math.ceil(Math.abs(new Date(to).getTime() - new Date(from).getTime()) / (1000 * 60 * 60 * 24)) + 1;
+    const finalDays = billableDays > 0 ? billableDays : (isNaN(rawDays) ? 1 : Math.max(rawDays, 1));
 
     const leaves = getLeaves();
     const newLeave: LeaveRequest = {
@@ -54,7 +85,7 @@ export async function POST(req: NextRequest) {
       type,
       from,
       to,
-      days: isNaN(days) ? 1 : Math.max(days, 1),
+      days: finalDays,
       reason: reason || 'Personal reasons',
       status: 'pending',
       createdAt: new Date().toISOString()

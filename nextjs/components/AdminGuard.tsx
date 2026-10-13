@@ -1,5 +1,5 @@
 'use client';
-
+import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import DashboardLayout from '@/components/DashboardLayout';
 import { useAuth } from '@/lib/AuthContext';
@@ -10,8 +10,13 @@ interface AdminGuardProps {
 
 export default function AdminGuard({ children }: AdminGuardProps) {
   const { user, isEmployee, isLoading } = useAuth();
+  const [mounted, setMounted] = useState(false);
 
-  if (isLoading && !user) {
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  if (!mounted || (isLoading && !user)) {
     return (
       <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
         <div className="loading-spinner" />

@@ -18,6 +18,8 @@ export default function ApplyLeaveModal({ isOpen, employees, onClose, onSuccess 
   const [reason, setReason] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [holidays, setHolidays] = useState<any[]>([]);
+  const [weekoff, setWeekoff] = useState<any>({ sunday: true, sats: [2, 4] });
 
   useEffect(() => {
     if (employees.length > 0 && !empId) {
@@ -25,7 +27,69 @@ export default function ApplyLeaveModal({ isOpen, employees, onClose, onSuccess 
     }
   }, [employees, empId]);
 
-  if (!isOpen) return null;
+  useEffect(() => {
+    if (isOpen) {
+      fetch('/api/settings')
+        .then(res => res.ok ? res.json() : null)
+        .then(data => {
+          if (data) {
+            if (data.holidays) setHolidays(data.holidays);
+            if (data.weekoff) setWeekoff(data.weekoff);
+          }
+        })
+        .catch(() => {});
+    }
+  }, [isOpen]);
+
+  // Compute advisory for selected date range
+  const getLeaveDateAdvice = () => {
+    if (!from || !to) return null;
+    const cur = new Date(from);
+    const end = new Date(to);
+    if (isNaN(cur.getTime()) || isNaN(end.getTime()) || cur > end) return null;
+
+    const matchedHolidays: string[] = [];
+    let weekendCount = 0;
+    let totalDays = 0;
+
+    const temp = new Date(from);
+    while (temp <= end) {
+      totalDays++;
+      const dStr = temp.toISOString().split('T')[0];
+      const dow = temp.getDay();
+      const isSun = dow === 0 && weekoff.sunday;
+      const dom = temp.getDate();
+      const satIdx = Math.ceil(dom / 7);
+      const isSat = dow === 6 && (weekoff.sats || []).includes(satIdx);
+
+      const foundHol = holidays.find(h => {
+        if (!h.date) return false;
+        if (h.yearly) return h.date.slice(5) === dStr.slice(5);
+        return h.date === dStr;
+      });
+
+      if (foundHol) {
+        if (!matchedHolidays.includes(foundHol.name)) matchedHolidays.push(foundHol.name);
+      } else if (isSun || isSat) {
+        weekendCount++;
+      }
+      temp.setDate(temp.getDate() + 1);
+    }
+
+    const workingDays = Math.max(1, totalDays - matchedHolidays.length - weekendCount);
+
+    if (matchedHolidays.length > 0 || weekendCount > 0) {
+      return {
+        totalDays,
+        workingDays,
+        holidays: matchedHolidays,
+        weekendCount
+      };
+    }
+    return null;
+  };
+
+  const dateAdvice = getLeaveDateAdvice();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -67,6 +131,8 @@ export default function ApplyLeaveModal({ isOpen, employees, onClose, onSuccess 
   };
 
   const isSingleEmployee = employees.length === 1;
+
+  if (!isOpen) return null;
 
   return (
     <div className="modal-overlay">
@@ -151,6 +217,36 @@ export default function ApplyLeaveModal({ isOpen, employees, onClose, onSuccess 
                 />
               </div>
             </div>
+
+            {dateAdvice && (
+              <div style={{
+                marginBottom: '1rem',
+                padding: '0.65rem 0.85rem',
+                background: '#eff6ff',
+                border: '1px solid #bfdbfe',
+                borderRadius: '8px',
+                fontSize: '0.78rem',
+                color: '#1e40af',
+                lineHeight: 1.45
+              }}>
+                <div style={{ fontWeight: 600, marginBottom: '0.2rem' }}>
+                  📅 Official Calendar Advisory:
+                </div>
+                <div>
+                  Selected range is <strong>{dateAdvice.totalDays} day(s)</strong>, but will only count as <strong>{dateAdvice.workingDays} billable working day(s)</strong>:
+                </div>
+                {dateAdvice.holidays.length > 0 && (
+                  <div style={{ marginTop: '0.2rem' }}>
+                    • Company Holiday(s): <strong>{dateAdvice.holidays.join(', ')}</strong> (off-duty, no leave deducted)
+                  </div>
+                )}
+                {dateAdvice.weekendCount > 0 && (
+                  <div style={{ marginTop: '0.15rem' }}>
+                    • Week-Off Days: <strong>{dateAdvice.weekendCount} day(s)</strong> (Sunday / Configured Saturday off)
+                  </div>
+                )}
+              </div>
+            )}
 
             <div className="form-group">
               <label className="form-label">Reason / Justification</label>

@@ -1,31 +1,33 @@
-// Service Worker for R & A Associates HRMS PWA
-const CACHE_NAME = 'hrms-cache-v1';
-const ASSETS_TO_CACHE = [
-  '/',
-  '/index.html',
-  '/manifest.webmanifest'
-];
+// Service Worker for HRMS PWA (Cache Buster v2.7.0)
+const CACHE_NAME = 'hrms-cache-v2.7.0';
 
 self.addEventListener('install', event => {
-  event.waitUntil(
-    caches.open(CACHE_NAME).then(cache => cache.addAll(ASSETS_TO_CACHE)).then(() => self.skipWaiting())
-  );
+  self.skipWaiting();
 });
 
 self.addEventListener('activate', event => {
   event.waitUntil(
     caches.keys().then(keys => Promise.all(
-      keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k))
+      keys.map(k => caches.delete(k))
     )).then(() => self.clients.claim())
   );
 });
 
 self.addEventListener('fetch', event => {
-  // Let API requests bypass cache
+  // Let API requests bypass cache completely
   if (event.request.url.includes('/api/')) {
     return;
   }
+  // Network first: always fetch fresh assets from server, fallback to cache only if completely offline
   event.respondWith(
-    caches.match(event.request).then(response => response || fetch(event.request))
+    fetch(event.request)
+      .then(response => {
+        if (response && response.status === 200) {
+          const clone = response.clone();
+          caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
+        }
+        return response;
+      })
+      .catch(() => caches.match(event.request))
   );
 });

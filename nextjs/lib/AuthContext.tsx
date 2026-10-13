@@ -24,32 +24,9 @@ const AuthContext = createContext<AuthContextType>({
 });
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  // Synchronously initialize from sessionStorage if available to eliminate any 1-frame flash
-  const [user, setUser] = useState<UserSession | null>(() => {
-    if (typeof window !== 'undefined') {
-      try {
-        const cached = sessionStorage.getItem('hrms_session_user');
-        return cached ? JSON.parse(cached) : null;
-      } catch {
-        return null;
-      }
-    }
-    return null;
-  });
-
-  const [employee, setEmployee] = useState<Employee | null>(() => {
-    if (typeof window !== 'undefined') {
-      try {
-        const cached = sessionStorage.getItem('hrms_session_emp');
-        return cached ? JSON.parse(cached) : null;
-      } catch {
-        return null;
-      }
-    }
-    return null;
-  });
-
-  const [isLoading, setIsLoading] = useState(!user);
+  const [user, setUser] = useState<UserSession | null>(null);
+  const [employee, setEmployee] = useState<Employee | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
 
   const fetchSession = async () => {
     try {
@@ -83,6 +60,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   useEffect(() => {
+    // Restore from sessionStorage on client mount after hydration
+    if (typeof window !== 'undefined') {
+      try {
+        const cachedUser = sessionStorage.getItem('hrms_session_user');
+        if (cachedUser) setUser(JSON.parse(cachedUser));
+        const cachedEmp = sessionStorage.getItem('hrms_session_emp');
+        if (cachedEmp) setEmployee(JSON.parse(cachedEmp));
+      } catch (err) {
+        console.error('Session cache read error:', err);
+      }
+    }
     fetchSession();
   }, []);
 

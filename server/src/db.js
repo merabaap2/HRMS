@@ -66,20 +66,12 @@ class Database {
     clearTimeout(this.persistTimer);
     this.persistTimer = setTimeout(() => {
       const dataStr = JSON.stringify(this.state);
-      const tmpFile = this.filePath + '.tmp';
-      fs.writeFile(tmpFile, dataStr, 'utf8', (err) => {
-        if (!err) {
-          try {
-            fs.renameSync(tmpFile, this.filePath);
-            // Also maintain backwards compatibility with root data.json
-            fs.writeFileSync(this.legacyFilePath, dataStr, 'utf8');
-          } catch (renameErr) {
-            console.error('Atomic persist failed:', renameErr);
-          }
-        } else {
-          console.error('Write temp DB failed:', err);
-        }
-      });
+      try {
+        fs.writeFileSync(this.filePath, dataStr, 'utf8');
+        fs.writeFileSync(this.legacyFilePath, dataStr, 'utf8');
+      } catch (err) {
+        console.error('Persist DB failed:', err);
+      }
     }, 300);
   }
 }

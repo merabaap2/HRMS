@@ -64,8 +64,6 @@ export default function EditEmployeeModal({
     };
   }, []);
 
-  if (!isOpen || !employee) return null;
-
   const startCamera = async () => {
     setCameraError(null);
     setIsCameraActive(true);
@@ -234,6 +232,8 @@ export default function EditEmployeeModal({
       setLoading(false);
     }
   };
+
+  if (!isOpen || !employee) return null;
 
   return (
     <div className="modal-overlay">

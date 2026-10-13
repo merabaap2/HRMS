@@ -1,38 +1,83 @@
 
-    // ========== SHARED DATA SYNC (used when served by server.js; ignored when opened as a plain file) ==========
+    // ========== SHARED DATA SYNC & PERSISTENCE (Bidirectional Backend Connection) ==========
     (function () {
-      if (location.protocol === 'file:') return;
-      const nSet = Storage.prototype.setItem, nDel = Storage.prototype.removeItem, mine = k => typeof k === 'string' && k.startsWith('hrms_');
+      if (typeof window === 'undefined' || location.protocol === 'file:') return;
+      const nSet = Storage.prototype.setItem;
+      const nDel = Storage.prototype.removeItem;
+      const mine = k => typeof k === 'string' && k.startsWith('hrms_');
       const push = (m, k, v) => fetch('/api/state/' + k, { method: m, body: v }).catch(() => {});
-      function pull(sync) {
-        const x = new XMLHttpRequest(); x.open('GET', '/api/state', !sync);
-        const apply = () => {
-          if (x.status !== 200) return false;
-          const d = JSON.parse(x.responseText), keys = Object.keys(d); let changed = false;
-          if (!keys.length) { Object.keys(localStorage).filter(mine).forEach(k => push('PUT', k, localStorage.getItem(k))); return false; }   // first run: upload this browser's data
-          keys.forEach(k => { if (localStorage.getItem(k) !== d[k]) { nSet.call(localStorage, k, d[k]); changed = true; } });
-          Object.keys(localStorage).filter(mine).forEach(k => { if (!(k in d)) { nDel.call(localStorage, k); changed = true; } });
-          return changed;
-        };
-        if (sync) { try { x.send(); apply(); } catch (e) {} return; }
-        x.onload = () => { try { if (apply() && !document.querySelector('.modal-backdrop.show') && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName || '') && typeof refreshCurrentPage === 'function' && session) refreshCurrentPage(); } catch (e) {} };
-        x.send();
+
+      function updateSyncStatus(isLive) {
+        const dot = document.querySelector('.sync-dot');
+        const text = document.getElementById('footerSyncStatus');
+        if (dot) dot.classList.toggle('live', isLive);
+        if (text && isLive) text.innerHTML = '<span class="sync-dot live"></span> Backend Synced (JSON Server Active)';
       }
-      pull(true);
-      Storage.prototype.setItem = function (k, v) { nSet.call(this, k, v); if (this === localStorage && mine(k)) push('PUT', k, v); };
-      Storage.prototype.removeItem = function (k) { nDel.call(this, k); if (this === localStorage && mine(k)) push('DELETE', k); };
-      setInterval(() => pull(false), 30000);
+
+      async function pullState() {
+        try {
+          const res = await fetch('/api/state');
+          if (!res.ok) { updateSyncStatus(false); return; }
+          const d = await res.json();
+          const keys = Object.keys(d);
+          let changed = false;
+
+          if (!keys.length) {
+            // First run on clean backend: sync current local data to backend
+            Object.keys(localStorage).filter(mine).forEach(k => push('PUT', k, localStorage.getItem(k)));
+            updateSyncStatus(true);
+            return;
+          }
+
+          // Hydrate localStorage with backend state
+          keys.forEach(k => {
+            if (localStorage.getItem(k) !== d[k]) {
+              nSet.call(localStorage, k, d[k]);
+              changed = true;
+            }
+          });
+
+          updateSyncStatus(true);
+
+          // If data was updated, refresh current page smoothly
+          if (changed && typeof refreshCurrentPage === 'function' && typeof session !== 'undefined' && session) {
+            if (!document.querySelector('.modal-backdrop.show') && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName || '')) {
+              refreshCurrentPage();
+            }
+          }
+        } catch (e) {
+          updateSyncStatus(false);
+        }
+      }
+
+      // Initial async hydration
+      pullState();
+
+      // Hook localStorage writes so any client update is immediately pushed to backend
+      Storage.prototype.setItem = function (k, v) {
+        nSet.call(this, k, v);
+        if (this === localStorage && mine(k)) push('PUT', k, v);
+      };
+      Storage.prototype.removeItem = function (k) {
+        nDel.call(this, k);
+        if (this === localStorage && mine(k)) push('DELETE', k);
+      };
+
+      // Periodic pull to keep state synced across multiple tabs/windows
+      setInterval(pullState, 15000);
+      window.addEventListener('focus', pullState);
     })();
 
 
     // ========== INSTALLABLE APP (PWA) ==========
     (function () {
+      if (typeof caches !== 'undefined') { caches.keys().then(keys => keys.forEach(k => { if (k === 'hrms-cache-v1') caches.delete(k); })); }
       if (location.protocol === 'https:' && 'serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
       let ev = null;
       window.addEventListener('beforeinstallprompt', e => {
         e.preventDefault(); ev = e;
         if (matchMedia('(display-mode: standalone)').matches) return;
-        const b = document.createElement('button'); b.textContent = 'â¬‡ Install App';
+        const b = document.createElement('button'); b.textContent = '⬇ Install App';
         b.style.cssText = 'position:fixed;right:14px;bottom:14px;z-index:9998;background:#2563eb;color:#fff;border:0;border-radius:999px;padding:.7rem 1.1rem;font-weight:600;box-shadow:0 6px 16px rgba(0,0,0,.25);cursor:pointer';
         b.onclick = () => { ev.prompt(); ev.userChoice.finally(() => b.remove()); };
         document.body.appendChild(b);
@@ -170,12 +215,20 @@
       return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
     }
 
-    function timeAgo(iso) {
-      const diff = (Date.now() - new Date(iso).getTime()) / 1000;
+    function timeAgo(val) {
+      if (!val) return 'Recently';
+      if (typeof val === 'string' && /^((\d{1,2}:\d{2}\s*(am|pm|AM|PM)?)|Today|Yesterday)/i.test(val.trim())) {
+        return val.trim();
+      }
+      const d = new Date(val);
+      if (isNaN(d.getTime())) return String(val);
+      const diff = (Date.now() - d.getTime()) / 1000;
+      if (diff < 0) return 'Just now';
       if (diff < 60) return 'Just now';
       if (diff < 3600) return Math.floor(diff / 60) + ' min ago';
       if (diff < 86400) return Math.floor(diff / 3600) + ' hours ago';
-      return Math.floor(diff / 86400) + ' days ago';
+      if (diff < 604800) return Math.floor(diff / 86400) + ' days ago';
+      return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
     }
 
     function daysBetween(from, to) {
@@ -212,7 +265,14 @@
     // ========== EMPLOYEE PHOTOS ==========
     let photoRaw = null, photoMap = {}, empPhotoNew;
     function getPhotos() { const r = localStorage.getItem(STORAGE_KEYS.photos); if (r !== photoRaw) { photoRaw = r; try { photoMap = JSON.parse(r || '{}') || {}; } catch { photoMap = {}; } } return { ...photoMap }; }
-    function avImg(e) { if (!e) return '?'; const ph = (getPhotos(), photoMap)[e.id]; return ph ? `<img src="${ph}" alt="" />` : esc(e.avatar || '?'); }
+        function avImg(e) {
+      if (!e) return '?';
+      const ph = (getPhotos(), photoMap)[e.id] || (e.avatar && (e.avatar.startsWith('data:') || e.avatar.startsWith('http') || e.avatar.startsWith('/')) ? e.avatar : null);
+      if (ph) return `<img src="${ph}" alt="${esc(e.name || '')}" style="width:100%;height:100%;object-fit:cover;border-radius:inherit;display:block;" />`;
+      if (e.avatar && e.avatar.length <= 4 && !e.avatar.includes(';')) return esc(e.avatar);
+      const initials = (e.name || '').split(' ').map(n => n[0]).filter(Boolean).slice(0, 2).join('').toUpperCase();
+      return initials || '?';
+    }
     function empPhotoShow(src, name) { document.getElementById('empPhotoPrev').innerHTML = src ? `<img src="${src}" style="width:100%;height:100%;object-fit:cover" />` : esc(getInitials(name || '') || '?'); }
     function empPhotoInit(e) { empPhotoNew = undefined; document.getElementById('empPhotoFile').value = ''; empPhotoShow(e ? (getPhotos(), photoMap)[e.id] : '', e?.name); }
     function empPhotoClear() { empPhotoNew = ''; document.getElementById('empPhotoFile').value = ''; empPhotoShow('', document.getElementById('empName').value); }
@@ -490,35 +550,77 @@
       if (o.dailyMin > 9 * 60) issues.push('Daily working time is above 9 hours.');
       if (weekly > 48 * 60) issues.push('Weekly working time is above 48 hours.');
       if (lunchMin < 60) issues.push('Rest interval is under 1 hour.');
-      const inp = 'width:100%; padding:.5rem .6rem; border:1px solid var(--border); border-radius:8px; font-family:inherit';
       return `
-        <div class="card" style="max-width:560px; margin-bottom:1.25rem">
-          <div class="card-header"><h2>Office Timings</h2></div>
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2>Office Timings & Shift Rules</h2>
+              <div class="dept-tag" style="margin-top:2px">Configure standard operating hours, lunch breaks, and grace period thresholds</div>
+            </div>
+          </div>
           <div class="card-body" style="padding:1.5rem">
-            <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:.75rem; margin-bottom:.75rem">
-              <div><label class="dept-tag">Opening</label><input type="time" id="offOpen" value="${o.open}" style="${inp}" /></div>
-              <div><label class="dept-tag">Closing</label><input type="time" id="offClose" value="${o.close}" style="${inp}" /></div>
-              <div><label class="dept-tag">Lunch starts</label><input type="time" id="offLs" value="${o.lunchStart}" style="${inp}" /></div>
-              <div><label class="dept-tag">Lunch ends</label><input type="time" id="offLe" value="${o.lunchEnd}" style="${inp}" /></div>
-              <div><label class="dept-tag">Grace period (min), in &amp; out</label><input type="number" id="offGrace" min="0" max="120" value="${o.grace}" style="${inp}" /></div>
-              <div><label class="dept-tag">Half day if net &lt; (hrs)</label><input type="number" id="offHalf" min="1" max="12" step="0.5" value="${o.half}" style="${inp}" /></div>
+            <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:1rem; margin-bottom:1.25rem">
+              <div>
+                <label style="display:block;font-size:0.78rem;font-weight:600;color:#475569;margin-bottom:0.35rem">Shift Opening</label>
+                <div class="att-time-cell"><input type="time" id="offOpen" class="att-time in-time" value="${o.open}" style="width:100%" /></div>
+              </div>
+              <div>
+                <label style="display:block;font-size:0.78rem;font-weight:600;color:#475569;margin-bottom:0.35rem">Shift Closing</label>
+                <div class="att-time-cell"><input type="time" id="offClose" class="att-time out-time" value="${o.close}" style="width:100%" /></div>
+              </div>
+              <div>
+                <label style="display:block;font-size:0.78rem;font-weight:600;color:#475569;margin-bottom:0.35rem">Lunch Starts</label>
+                <div class="att-time-cell"><input type="time" id="offLs" class="att-time" value="${o.lunchStart}" style="width:100%" /></div>
+              </div>
+              <div>
+                <label style="display:block;font-size:0.78rem;font-weight:600;color:#475569;margin-bottom:0.35rem">Lunch Ends</label>
+                <div class="att-time-cell"><input type="time" id="offLe" class="att-time" value="${o.lunchEnd}" style="width:100%" /></div>
+              </div>
+              <div>
+                <label style="display:block;font-size:0.78rem;font-weight:600;color:#475569;margin-bottom:0.35rem">Grace Period (Minutes)</label>
+                <input type="number" id="offGrace" min="0" max="120" value="${o.grace}" class="att-time" style="width:100%" />
+              </div>
+              <div>
+                <label style="display:block;font-size:0.78rem;font-weight:600;color:#475569;margin-bottom:0.35rem">Half-Day Threshold (Hrs)</label>
+                <input type="number" id="offHalf" min="1" max="12" step="0.5" value="${o.half}" class="att-time" style="width:100%" />
+              </div>
             </div>
-            <div class="dept-tag" style="margin-bottom:.4rem">Working days</div>
-            <div style="display:flex; flex-wrap:wrap; gap:.75rem; margin-bottom:1rem; font-size:.85rem">
-              ${[1, 2, 3, 4, 5, 6, 0].map(d => `<label style="display:flex; gap:.3rem; align-items:center"><input type="checkbox" class="off-day" value="${d}" ${o.days.includes(d) ? 'checked' : ''} />${DAY_NAMES[d]}</label>`).join('')}
+
+            <div style="margin-bottom:1.25rem">
+              <label style="display:block;font-size:0.8rem;font-weight:600;color:#334155;margin-bottom:0.5rem">Standard Working Days</label>
+              <div style="display:flex; flex-wrap:wrap; gap:0.5rem">
+                ${[1, 2, 3, 4, 5, 6, 0].map(d => `
+                  <label class="day-pill-checkbox">
+                    <input type="checkbox" class="off-day" value="${d}" ${o.days.includes(d) ? 'checked' : ''} />
+                    <span>${DAY_NAMES[d]}</span>
+                  </label>
+                `).join('')}
+              </div>
             </div>
-            <div style="padding:.75rem 1rem; background:#f8fafc; border-radius:8px; font-size:.85rem; line-height:1.7; margin-bottom:.75rem">
-              Working time per day: <strong>${fmtDur(o.dailyMin)}</strong> (lunch ${fmtDur(lunchMin)} not counted)<br>
-              Working time per week: <strong>${fmtDur(weekly)}</strong> over ${o.days.length} day(s)
+
+            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:1rem; margin-bottom:1.25rem">
+              <div style="padding:1rem; background:#f8fafc; border:1px solid #e2e8f0; border-radius:10px; font-size:.85rem; line-height:1.7">
+                <div style="font-weight:700;color:#0f172a;margin-bottom:0.25rem">Calculated Working Durations</div>
+                Daily Working Time: <strong>${fmtDur(o.dailyMin)}</strong> (excluding ${fmtDur(lunchMin)} lunch)<br>
+                Weekly Working Time: <strong>${fmtDur(weekly)}</strong> across <strong>${o.days.length}</strong> active days
+              </div>
+              <div style="padding:1rem; border-radius:10px; font-size:.82rem; line-height:1.6; border:1px solid ${issues.length ? '#fde68a' : '#a7f3d0'}; ${issues.length ? 'background:#fffbeb; color:#92400e' : 'background:#ecfdf5; color:#065f46'}">
+                <div style="font-weight:700;margin-bottom:0.25rem">${issues.length ? '⚠️ Policy Notice' : '✓ Statutory Compliance'}</div>
+                ${issues.length ? issues.join(' ') + ' Check this against local Shops & Establishments rules.' : 'Fully compliant with standard 8h/day, 48h/week, and 1h rest interval regulations.'}
+              </div>
             </div>
-            <div style="padding:.75rem 1rem; border-radius:8px; font-size:.8rem; line-height:1.6; margin-bottom:1rem; ${issues.length ? 'background:#fffbeb; color:#92400e' : 'background:#ecfdf5; color:#065f46'}">
-              ${issues.length ? issues.join(' ') + ' Check this against the state Shops &amp; Establishments rules before using it.' : 'Within the usual limits of 8 hours a day, 48 hours a week and a 1 hour rest interval. Confirm against the Shops &amp; Establishments rules that apply to your firm.'}
-            </div>
+
             <div class="btn-group">
-              <button class="btn btn-primary" onclick="saveOffice()">Save Timings</button>
-              <button class="btn btn-secondary" onclick="resetOffice()">Reset to 9:30 AM — 6:30 PM</button>
+              <button class="btn btn-primary" onclick="saveOffice()">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+                <span>Save Timings</span>
+              </button>
+              <button class="btn btn-secondary" onclick="resetOffice()">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+                <span>Reset to 9:30 AM — 6:30 PM</span>
+              </button>
             </div>
-            <p class="dept-tag" style="margin-top:.9rem; line-height:1.6">Used for Late / Half Day / Early out on the Attendance page, the eSSL import and the Mark Attendance form. Hours worked exclude the lunch break.</p>
+            <p class="dept-tag" style="margin-top:1rem; line-height:1.6">Used for automatic Late, Half Day, and Early Out calculations on the Attendance module, biometric import, and punch logs.</p>
           </div>
         </div>`;
     }
@@ -614,40 +716,126 @@
       refreshCurrentPage();
     }
 
-    function renderHolidayCard() {
+        function renderHolidayCard() {
       const w = weekoffCfg();
-      const inp = 'padding:.5rem .6rem; border:1px solid var(--border); border-radius:8px; font-family:inherit';
       const list = getHolidays().slice().sort((a, b) => a.date.slice(5).localeCompare(b.date.slice(5)) || a.date.localeCompare(b.date));
       return `
-        <div class="card" style="max-width:560px; margin-bottom:1.25rem">
-          <div class="card-header"><h2>Holidays &amp; Week-offs</h2></div>
+        <div class="card" style="margin-bottom:1.5rem">
+          <div class="card-header">
+            <div>
+              <h2>Weekly Off Schedule (Every Month)</h2>
+              <div class="dept-tag" style="margin-top:2px">Configure standard recurring weekly rest days for statutory labor compliance</div>
+            </div>
+            <button class="btn btn-primary" onclick="saveWeekoff()">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/></svg>
+              <span>Save Week-off Rules</span>
+            </button>
+          </div>
           <div class="card-body" style="padding:1.5rem">
-            <div class="dept-tag" style="margin-bottom:.4rem">Weekly off rule (every month)</div>
-            <div style="display:flex; flex-wrap:wrap; gap:.75rem; margin-bottom:.9rem; font-size:.85rem">
-              <label style="display:flex; gap:.3rem; align-items:center"><input type="checkbox" id="woSun" ${w.sunday ? 'checked' : ''} />Every Sunday</label>
-              ${[1, 2, 3, 4, 5].map(n => `<label style="display:flex; gap:.3rem; align-items:center"><input type="checkbox" class="wo-sat" value="${n}" ${w.sats.includes(n) ? 'checked' : ''} />${ordinal(n)} Saturday</label>`).join('')}
+            <div style="margin-bottom:1.25rem">
+              <label style="display:block;font-size:0.8rem;font-weight:600;color:#334155;margin-bottom:0.6rem">Active Weekly Rest Days</label>
+              <div style="display:flex; flex-wrap:wrap; gap:0.6rem">
+                <label class="day-pill-checkbox">
+                  <input type="checkbox" id="woSun" ${w.sunday ? 'checked' : ''} />
+                  <span>Every Sunday</span>
+                </label>
+                ${[1, 2, 3, 4, 5].map(n => `
+                  <label class="day-pill-checkbox">
+                    <input type="checkbox" class="wo-sat" value="${n}" ${w.sats.includes(n) ? 'checked' : ''} />
+                    <span>${ordinal(n)} Saturday</span>
+                  </label>
+                `).join('')}
+              </div>
             </div>
-            <button class="btn btn-primary" style="margin-bottom:1.25rem" onclick="saveWeekoff()">Save Week-off Rules</button>
 
-            <div class="dept-tag" style="margin-bottom:.4rem">Add holiday (fixed calendar date)</div>
-            <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:.6rem; margin-bottom:.6rem">
-              <input type="date" id="holDate" style="${inp}" />
-              <input type="text" id="holName" placeholder="e.g. Diwali" style="${inp}" />
-              <select id="holType" style="${inp}"><option value="festival">Festival</option><option value="national">National</option><option value="optional">Optional</option></select>
+            <div class="callout-box info">
+              <div style="font-weight:700;margin-bottom:0.25rem">Active Rule in Force</div>
+              Currently configured: <strong>${weekoffSummary()}</strong>. Weekly offs and national holidays are protected paid rest days and never penalized as Loss of Pay (LOP).
             </div>
-            <label style="display:flex; gap:.4rem; align-items:center; font-size:.82rem; margin-bottom:.75rem"><input type="checkbox" id="holYearly" />Repeat every year on this date (use for fixed dates like national holidays)</label>
-            <button class="btn btn-primary" style="margin-bottom:1.25rem" onclick="addHoliday()">Add Holiday</button>
+          </div>
+        </div>
 
-            <div class="dept-tag" style="margin-bottom:.4rem">Holiday calendar (${list.length})</div>
-            <table>
-              <thead><tr><th>Date</th><th>Holiday</th><th>Type</th><th></th></tr></thead>
-              <tbody>${list.map(h => `
-                <tr><td>${formatDate(h.date)}${h.yearly ? '<div class="dept-tag">Every year</div>' : ''}</td><td>${esc(h.name)}</td>
-                <td><span class="hol-type ${h.type}">${HOL_TYPES[h.type]}</span></td>
-                <td><button class="btn btn-delete" onclick="deleteHoliday('${h.id}')">Remove</button></td></tr>`).join('')}
-              </tbody>
-            </table>
-            <p class="dept-tag" style="margin-top:.9rem; line-height:1.6">Rule in force: <strong>${weekoffSummary()}</strong>. National &amp; Festival holidays are automatic offs. Optional holidays are listed but stay working days. Off days are skipped for Absent marking in the eSSL import and can be marked on the Attendance page. Holiday is paid and never counts as LOP. Festival dates change every year, so add them for the year.</p>
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2>Official Holiday Calendar &amp; Observances (${list.length})</h2>
+              <div class="dept-tag" style="margin-top:2px">Manage fixed and flexible company holidays across the calendar year</div>
+            </div>
+          </div>
+          <div class="card-body" style="padding:1.5rem">
+            <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:12px; padding:1.25rem; margin-bottom:1.5rem">
+              <div style="font-size:0.86rem; font-weight:700; color:#0f172a; margin-bottom:0.85rem">Add New Holiday or Observance</div>
+              <div class="settings-form-grid" style="margin-bottom:0.85rem">
+                <div class="settings-form-field">
+                  <label>Holiday Date</label>
+                  <input type="date" id="holDate" style="width:100%" />
+                </div>
+                <div class="settings-form-field">
+                  <label>Holiday Title / Occasion</label>
+                  <input type="text" id="holName" placeholder="e.g. Republic Day, Diwali" style="width:100%" />
+                </div>
+                <div class="settings-form-field">
+                  <label>Holiday Category</label>
+                  <select id="holType" style="width:100%">
+                    <option value="festival">Festival Holiday (Paid Off)</option>
+                    <option value="national">National Holiday (Statutory Off)</option>
+                    <option value="optional">Optional / Floating Holiday</option>
+                  </select>
+                </div>
+              </div>
+              <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.75rem">
+                <label style="display:flex; gap:0.5rem; align-items:center; font-size:0.82rem; font-weight:600; color:#475569; cursor:pointer">
+                  <input type="checkbox" id="holYearly" style="width:16px; height:16px" />
+                  <span>Repeat annually on this date (for fixed national days)</span>
+                </label>
+                <button class="btn btn-primary" onclick="addHoliday()">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                  <span>Add Holiday to Calendar</span>
+                </button>
+              </div>
+            </div>
+
+            <div class="table-wrap">
+              ${list.length ? `
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Holiday Name</th>
+                      <th>Category</th>
+                      <th>Frequency</th>
+                      <th style="text-align:right">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${list.map(h => `
+                      <tr>
+                        <td>
+                          <div style="font-weight:700; color:#0f172a">${formatDate(h.date)}</div>
+                        </td>
+                        <td>
+                          <div style="font-weight:600; color:#1e293b">${esc(h.name)}</div>
+                        </td>
+                        <td>
+                          <span class="badge ${h.type === 'national' ? 'active' : h.type === 'festival' ? 'probation' : 'inactive'}">
+                            ${HOL_TYPES[h.type]}
+                          </span>
+                        </td>
+                        <td class="dept-tag">
+                          ${h.yearly ? 'Repeats Annually' : 'One-time Calendar Date'}
+                        </td>
+                        <td style="text-align:right">
+                          <button class="btn btn-delete btn-sm" onclick="deleteHoliday('${h.id}')">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                            <span>Remove</span>
+                          </button>
+                        </td>
+                      </tr>
+                    `).join('')}
+                  </tbody>
+                </table>
+              ` : '<div class="empty-state">No holidays added to the calendar yet.</div>'}
+            </div>
           </div>
         </div>`;
     }
@@ -898,7 +1086,7 @@
           (Present ${cnt.present}, Late ${cnt.late}, Half Day ${cnt['half-day']}, Absent ${cnt.absent}).
           ${overwrites ? `<br><span style="color:#d97706;">${overwrites} will replace existing records for the same employee and date.</span>` : ''}
           ${rowsBad ? `<br><span style="color:#64748b;">${rowsBad} rows skipped (no readable date or employee code).</span>` : ''}
-          ${um.length ? `<br><span style="color:#dc2626;">Not matched to any employee (${um.length}): ${um.slice(0, 12).map(esc).join(', ')}${um.length > 12 ? ' —¦' : ''}. Add or correct their Employee ID and re-import.</span>` : ''}
+          ${um.length ? `<br><span style="color:#dc2626;">Not matched to any employee (${um.length}): ${um.slice(0, 12).map(esc).join(', ')}${um.length > 12 ? ' ...' : ''}. Add or correct their Employee ID and re-import.</span>` : ''}
         </div>`;
       const badge = { present: 'active', absent: 'inactive', 'half-day': 'probation', late: 'on-leave' };
       const label = { present: 'Present', absent: 'Absent', 'half-day': 'Half Day', late: 'Late' };
@@ -1116,11 +1304,29 @@
     }
     function renderPermPolicyCard() {
       const p = permPolicy(), dh = (officeCfg().dailyMin / 60).toFixed(2);
-      return `<div class="card"><div class="card-header"><h2>Permission (1 hr / 2 hr) Policy</h2></div><div class="card-body" style="padding:1.25rem">
-        <div style="display:flex;gap:.6rem;flex-wrap:wrap;align-items:center;margin-bottom:.9rem"><label style="font-size:.85rem">Free permission hours per employee per month</label>
-        <input id="permQuota" type="number" min="0" step="0.5" value="${p.quota}" style="padding:.5rem .7rem;border:1px solid var(--border);border-radius:8px;width:90px;font-family:inherit" />
-        <button class="btn btn-primary" style="padding:.55rem 1rem" onclick="savePermPolicy()">Save</button></div>
-        <p class="dept-tag" style="line-height:1.6">Each permission is 1 hr or 2 hr, within office hours. Hours beyond the monthly quota (and any overstay past the booked time) are treated as loss of pay: excess hours Ã· ${dh} daily working hours Ã— (Gross Ã· 30), added to the payroll LOP. This quota is company policy: Indian labour law does not fix a permission quota (working hours and rest intervals come from the Telangana Shops &amp; Establishments Act, 1988), so set it as per your HR policy.</p></div></div>`;
+      return `<div class="card">
+        <div class="card-header">
+          <div>
+            <h2>Permission (1 hr / 2 hr) Policy</h2>
+            <div class="dept-tag" style="margin-top:2px">Configure monthly free short-leave allowance per employee</div>
+          </div>
+        </div>
+        <div class="card-body" style="padding:1.5rem">
+          <div style="display:flex;gap:1rem;flex-wrap:wrap;align-items:center;margin-bottom:1.25rem;padding:1rem;background:#f8fafc;border-radius:10px;border:1px solid #e2e8f0">
+            <label style="font-size:.85rem;font-weight:600;color:#0f172a">Free permission hours quota per employee / month:</label>
+            <input id="permQuota" type="number" min="0" step="0.5" value="${p.quota}" class="att-time" style="width:110px" />
+            <button class="btn btn-primary" onclick="savePermPolicy()">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/></svg>
+              <span>Save Quota</span>
+            </button>
+          </div>
+          <div style="padding:1rem;background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;font-size:0.83rem;line-height:1.6;color:#1e40af">
+            <strong>Calculation & Loss of Pay Formula:</strong><br>
+            Each permission request is typically 1 hr or 2 hr during standard office hours. Any hours used beyond the monthly quota (${p.quota}h) or overstayed are treated as Loss of Pay (LOP):<br>
+            <code>Excess Hours ÷ ${dh} Daily Working Hours × (Gross Pay ÷ 30)</code>, added to monthly payroll deductions automatically.
+          </div>
+        </div>
+      </div>`;
     }
 
     function permTable(list, rowMap, hr) {
@@ -1346,40 +1552,71 @@
 
         <div class="grid-2">
           <div class="card">
-            <div class="card-header"><h2>Recent Activity</h2></div>
+            <div class="card-header">
+              <h2>Recent Activity</h2>
+              <span class="dept-tag" style="font-size:0.75rem">Live Logs</span>
+            </div>
             <div class="card-body">
               <ul class="activity-list">
                 ${activities.length === 0 ? '<li class="activity-item"><div class="activity-content"><div class="activity-text">No activity yet</div></div></li>' :
-                  activities.map(a => `
-                  <li class="activity-item">
-                    <div class="activity-dot ${a.color}"></div>
-                    <div class="activity-content">
-                      <div class="activity-text">${a.text}</div>
-                      <div class="activity-time">${timeAgo(a.time)}</div>
-                    </div>
-                  </li>`).join('')}
+                  activities.map(a => {
+                    const text = a.text || a.action || (a.user ? `${a.user}: Activity logged` : 'System activity');
+                    const time = timeAgo(a.time || a.createdAt || a.timestamp);
+                    const color = a.color || (a.type === 'success' ? 'green' : a.type === 'warning' ? 'amber' : a.type === 'danger' || a.type === 'error' ? 'red' : 'blue');
+                    return `
+                    <li class="activity-item">
+                      <div class="activity-dot ${color}"></div>
+                      <div class="activity-content">
+                        <div class="activity-text">${text}</div>
+                        <div class="activity-time">${time}</div>
+                      </div>
+                    </li>`;
+                  }).join('')}
               </ul>
             </div>
           </div>
 
           <div class="card">
-            <div class="card-header"><h2>Quick Actions</h2></div>
+            <div class="card-header">
+              <h2>Quick Actions</h2>
+              <span class="dept-tag" style="font-size:0.75rem">Shortcuts</span>
+            </div>
             <div class="actions-grid">
               <a class="action-btn" href="#" onclick="openAddEmployee(); return false;">
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7.5v3m0 0v3m0-3h3m-3 0h-3m-2.25-4.125a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zM4 19.235v-.11a6.375 6.375 0 0112.75 0v.109A12.318 12.318 0 0110.374 21c-2.331 0-4.512-.645-6.374-1.766z"/></svg>
-                Add Employee
+                <div class="action-icon-badge blue">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7.5v3m0 0v3m0-3h3m-3 0h-3m-2.25-4.125a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zM4 19.235v-.11a6.375 6.375 0 0112.75 0v.109A12.318 12.318 0 0110.374 21c-2.331 0-4.512-.645-6.374-1.766z"/></svg>
+                </div>
+                <div class="action-info">
+                  <span class="action-title">Add Employee</span>
+                  <span class="action-desc">Onboard staff</span>
+                </div>
               </a>
               <a class="action-btn" href="#" onclick="openMarkAttendance(); return false;">
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                Mark Attendance
+                <div class="action-icon-badge green">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                </div>
+                <div class="action-info">
+                  <span class="action-title">Mark Attendance</span>
+                  <span class="action-desc">Check-in / out</span>
+                </div>
               </a>
               <a class="action-btn" href="#" onclick="openAddLeave(); return false;">
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75m-18 0v-7.5A2.25 2.25 0 015.25 9h13.5A2.25 2.25 0 0121 11.25v7.5"/></svg>
-                Request Leave
+                <div class="action-icon-badge amber">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75m-18 0v-7.5A2.25 2.25 0 015.25 9h13.5A2.25 2.25 0 0121 11.25v7.5"/></svg>
+                </div>
+                <div class="action-info">
+                  <span class="action-title">Request Leave</span>
+                  <span class="action-desc">Submit time off</span>
+                </div>
               </a>
               <a class="action-btn" href="#" onclick="navigate('employees'); return false;">
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z"/></svg>
-                View Employees
+                <div class="action-icon-badge purple">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z"/></svg>
+                </div>
+                <div class="action-info">
+                  <span class="action-title">View Employees</span>
+                  <span class="action-desc">Directory & roles</span>
+                </div>
               </a>
             </div>
           </div>
@@ -1645,19 +1882,46 @@
         <div class="card">
           <div class="card-header">
             <h2>Attendance Records</h2>
-            <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;">
-              <input type="date" id="attViewDate" value="${date}" aria-label="Attendance date" onchange="setAttViewDate(this.value)" style="padding:.4rem .6rem; border:1px solid var(--border); border-radius:8px; font-family:inherit; font-size:.8rem;" />
-              <button class="btn btn-secondary" style="padding:.5rem 1rem; font-size:.8rem;" onclick="applyHolidayRules()">Mark Holidays &amp; Week-offs</button>
-              <button class="btn btn-secondary" style="padding:.5rem 1rem; font-size:.8rem;" onclick="openEsslImport()">Import eSSL Biometric</button>
-              <button class="btn btn-primary" style="padding:.5rem 1rem; font-size:.8rem;" onclick="openMarkAttendance()">+ Mark Attendance</button>
+            <div class="att-header-actions">
+              <div class="date-picker-wrap">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                <input type="date" id="attViewDate" value="${date}" aria-label="Attendance date" onchange="setAttViewDate(this.value)" class="att-date-input" />
+              </div>
+              <button class="btn btn-secondary btn-att-action" onclick="applyHolidayRules()">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+                <span>Holidays &amp; Week-offs</span>
+              </button>
+              <button class="btn btn-secondary btn-att-action" onclick="openEsslImport()">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 11c0 3.517-1.009 6.799-2.753 9.571m-3.44-2.04l.054-.09A13.916 13.916 0 008 11a4 4 0 118 0c0 1.017-.07 2.019-.203 3m-2.118 6.844A21.88 21.88 0 0015.171 17m3.839 1.132c.645-2.266.99-4.659.99-7.132A8 8 0 008 4.07M3 15.364c.64-1.319 1-2.8 1-4.364 0-1.457.39-2.823 1.07-4"/></svg>
+                <span>Import Biometric</span>
+              </button>
+              <button class="btn btn-primary btn-att-action" onclick="openMarkAttendance()">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                <span>Mark Attendance</span>
+              </button>
             </div>
           </div>
           <div class="card-body table-wrap">
-            <div style="padding:.75rem 1rem; background:#f8fafc; line-height:1.7; font-size:.85rem;">
-              <strong>${formatDate(date)}</strong> · ${dayName}
-              ${info.label ? ` · <span class="hol-type ${info.kind}">${esc(info.label)}</span>` : ''}
-              <div class="dept-tag">${marked} of ${rows.length} marked · Present ${cnt('present')}, Late ${cnt('late')}, Half Day ${cnt('half-day')}, Absent ${cnt('absent')}, Leave ${cnt('leave')}, Holiday ${cnt('holiday')}</div>
-              <div class="dept-tag">Off days rule: <strong>${weekoffSummary()}</strong>. Change in Settings &rarr; Holidays &amp; Week-offs.</div>
+            <div class="att-summary-banner">
+              <div class="att-summary-top">
+                <div class="att-date-badge">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                  <span>${formatDate(date)} · ${dayName}</span>
+                  ${info.label ? `<span class="hol-type ${info.kind}">${esc(info.label)}</span>` : ''}
+                </div>
+                <div class="att-kpis-row">
+                  <span class="att-kpi-chip present"><span class="kpi-dot"></span>Present: <strong>${cnt('present')}</strong></span>
+                  <span class="att-kpi-chip late"><span class="kpi-dot"></span>Late: <strong>${cnt('late')}</strong></span>
+                  <span class="att-kpi-chip half-day"><span class="kpi-dot"></span>Half Day: <strong>${cnt('half-day')}</strong></span>
+                  <span class="att-kpi-chip absent"><span class="kpi-dot"></span>Absent: <strong>${cnt('absent')}</strong></span>
+                  <span class="att-kpi-chip leave"><span class="kpi-dot"></span>Leave: <strong>${cnt('leave')}</strong></span>
+                  <span class="att-kpi-chip holiday"><span class="kpi-dot"></span>Off: <strong>${cnt('holiday')}</strong></span>
+                </div>
+              </div>
+              <div class="att-rule-line">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+                <span>${marked} of ${rows.length} marked &bull; Off days rule: <strong>${weekoffSummary()}</strong></span>
+              </div>
             </div>
             ${rows.length === 0 ? '<div class="empty-state">No employees on the roll for this date.</div>' : `
             <table>
@@ -1682,8 +1946,8 @@
                         ${ATT_STATUSES.map(([v, l]) => `<option value="${v}"${a.status === v ? ' selected' : ''}>${l}</option>`).join('')}
                       </select>
                     </td>
-                    <td><input type="time" class="att-time" aria-label="In time" value="${a.inTime || ''}" onchange="setAttTime('${a.id}', 'inTime', this.value)" ${a.status === 'holiday' || a.status === 'od' ? 'disabled' : ''} /></td>
-                    <td><input type="time" class="att-time" aria-label="Out time" value="${a.outTime || ''}" onchange="setAttTime('${a.id}', 'outTime', this.value)" ${a.status === 'holiday' || a.status === 'od' ? 'disabled' : ''} /></td>
+                    <td><div class="att-time-cell"><input type="time" class="att-time in-time" aria-label="In time" value="${a.inTime || ''}" onchange="setAttTime('${a.id}', 'inTime', this.value)" ${a.status === 'holiday' || a.status === 'od' ? 'disabled' : ''} /></div></td>
+                    <td><div class="att-time-cell"><input type="time" class="att-time out-time" aria-label="Out time" value="${a.outTime || ''}" onchange="setAttTime('${a.id}', 'outTime', this.value)" ${a.status === 'holiday' || a.status === 'od' ? 'disabled' : ''} /></div></td>
                     <td class="dept-tag">${attHours(a)}</td>
                     <td class="dept-tag">${a.source || 'Manual'}</td>
                     <td class="dept-tag">${attExtra(emp.id, date, a)}</td>` : `
@@ -1702,39 +1966,145 @@
       `;
     }
 
-    function renderSettings() {
+    
+    function downloadDatabaseBackup() {
+      const state = {};
+      Object.keys(localStorage).filter(k => k.startsWith('hrms_')).forEach(k => {
+        try { state[k] = JSON.parse(localStorage.getItem(k)); } catch { state[k] = localStorage.getItem(k); }
+      });
+      const jsonStr = JSON.stringify(state, null, 2);
+      const blob = new Blob([jsonStr], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `hrms_data_backup_${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      showToast('Database backup downloaded successfully', 'success');
+    }
+
+    let currentSettingsTab = 'hours';
+
+    function setSettingsTab(tab) {
+      currentSettingsTab = tab;
+      refreshCurrentPage();
+    }
+
+    function renderStorageCard() {
       const empCount = getEmployees().length;
       const leaveCount = getLeaves().length;
       const attCount = getAttendance().length;
+      const actCount = getActivities().length;
 
       return `
-        ${renderOfficeCard()}
-        ${renderHolidayCard()}
-        ${renderPermPolicyCard()}
-        ${renderPopupCard()}
-        ${renderSelfieCard()}
-        ${renderFaceCard()}
-        ${renderBioCard()}
-        <div class="card" style="max-width:560px">
-          <div class="card-header"><h2>Data & Storage</h2></div>
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2>Database State & Cloud Synchronization</h2>
+              <div class="dept-tag" style="margin-top:2px">Monitor active persistence, export backups, and synchronize with server storage</div>
+            </div>
+            <div class="footer-sync-status">
+              <span class="sync-dot live"></span>
+              <span>Backend JSON Server: ACTIVE</span>
+            </div>
+          </div>
           <div class="card-body" style="padding:1.5rem">
-            <p style="font-size:.875rem; color:var(--text-muted); margin-bottom:1.25rem">
-              All data is stored in your browser's <strong>localStorage</strong>. It persists across reloads but is specific to this browser and device.
-            </p>
-            <div style="display:grid; gap:.75rem; margin-bottom:1.5rem">
-              <div style="display:flex; justify-content:space-between; padding:.75rem 1rem; background:#f8fafc; border-radius:8px; font-size:.875rem">
-                <span>Employees</span><strong>${empCount}</strong>
+            <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:1rem; margin-bottom:1.5rem">
+              <div style="padding:1.1rem; background:#f8fafc; border:1px solid #e2e8f0; border-radius:10px">
+                <div class="dept-tag">Active Employees</div>
+                <div style="font-size:1.6rem; font-weight:800; color:#0f172a; margin-top:0.25rem">${empCount}</div>
               </div>
-              <div style="display:flex; justify-content:space-between; padding:.75rem 1rem; background:#f8fafc; border-radius:8px; font-size:.875rem">
-                <span>Leave Requests</span><strong>${leaveCount}</strong>
+              <div style="padding:1.1rem; background:#f8fafc; border:1px solid #e2e8f0; border-radius:10px">
+                <div class="dept-tag">Attendance Punches</div>
+                <div style="font-size:1.6rem; font-weight:800; color:#0f172a; margin-top:0.25rem">${attCount}</div>
               </div>
-              <div style="display:flex; justify-content:space-between; padding:.75rem 1rem; background:#f8fafc; border-radius:8px; font-size:.875rem">
-                <span>Attendance Records</span><strong>${attCount}</strong>
+              <div style="padding:1.1rem; background:#f8fafc; border:1px solid #e2e8f0; border-radius:10px">
+                <div class="dept-tag">Leave Applications</div>
+                <div style="font-size:1.6rem; font-weight:800; color:#0f172a; margin-top:0.25rem">${leaveCount}</div>
+              </div>
+              <div style="padding:1.1rem; background:#f8fafc; border:1px solid #e2e8f0; border-radius:10px">
+                <div class="dept-tag">Audit Activity Logs</div>
+                <div style="font-size:1.6rem; font-weight:800; color:#0f172a; margin-top:0.25rem">${actCount}</div>
               </div>
             </div>
-            <button class="btn btn-delete" style="padding:.6rem 1.2rem; font-size:.85rem; width:100%" onclick="clearAllData()">
-              Clear All Data & Reset to Sample
-            </button>
+
+            <div style="padding:1.1rem; background:#f8fafc; border-radius:10px; border:1px solid #e2e8f0; margin-bottom:1.5rem">
+              <div style="font-weight:700; color:#0f172a; margin-bottom:0.35rem">Persistence Mechanism</div>
+              <p style="font-size:0.83rem; color:#64748b; line-height:1.6; margin:0">
+                All records are stored in browser state and synchronized bidirectionally with the backend database at <code>/api/state</code> (persisting to <code>data/data.json</code>). Changes survive server restarts, device switches, and browser reloads.
+              </p>
+            </div>
+
+            <div style="display:flex; gap:0.75rem; flex-wrap:wrap">
+              <button class="btn btn-primary" onclick="downloadDatabaseBackup()">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                <span>Download Database Backup (JSON)</span>
+              </button>
+              <button class="btn btn-secondary" onclick="fetch('/api/state').then(r=>r.json()).then(()=>{showToast('State refreshed from server','success');refreshCurrentPage();})">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+                <span>Sync with Server Now</span>
+              </button>
+              <button class="btn btn-danger" onclick="clearAllData()">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                <span>Reset to Sample Dataset</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderSettings() {
+      const tabs = [
+        { id: 'hours', label: 'Office Timings', icon: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>` },
+        { id: 'holidays', label: 'Holidays & Week-offs', icon: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>` },
+        { id: 'policies', label: 'Permissions Policy', icon: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>` },
+        { id: 'biometrics', label: 'Biometrics & Face AI', icon: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>` },
+        { id: 'popups', label: 'Greeting Popups', icon: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>` },
+        { id: 'database', label: 'Database & Sync', icon: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" rx="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>` }
+      ];
+
+      let activeTabContent = '';
+      if (currentSettingsTab === 'hours') {
+        activeTabContent = renderOfficeCard();
+      } else if (currentSettingsTab === 'holidays') {
+        activeTabContent = renderHolidayCard();
+      } else if (currentSettingsTab === 'policies') {
+        activeTabContent = renderPermPolicyCard();
+      } else if (currentSettingsTab === 'biometrics') {
+        activeTabContent = `
+          <div class="settings-stack">
+            ${renderFaceCard()}
+            ${renderSelfieCard()}
+            ${renderBioCard()}
+          </div>
+        `;
+      } else if (currentSettingsTab === 'popups') {
+        activeTabContent = renderPopupCard();
+      } else if (currentSettingsTab === 'database') {
+        activeTabContent = renderStorageCard();
+      }
+
+      return `
+        <div class="settings-workspace">
+          <div class="settings-header">
+            <div>
+              <h1 class="settings-title">System Settings &amp; Governance</h1>
+              <p class="settings-subtitle">Manage company work hours, holiday calendars, attendance policies, facial recognition AI, and cloud synchronization.</p>
+            </div>
+          </div>
+
+          <div class="settings-tabs-nav">
+            ${tabs.map(t => `
+              <button class="settings-tab-btn ${currentSettingsTab === t.id ? 'active' : ''}" onclick="setSettingsTab('${t.id}')">
+                ${t.icon}
+                <span>${t.label}</span>
+              </button>
+            `).join('')}
+          </div>
+
+          <div class="settings-tab-body">
+            ${activeTabContent}
           </div>
         </div>
       `;
@@ -2248,7 +2618,7 @@
             </table></div>
             <p class="dept-tag" style="padding:1rem 1.25rem; line-height:1.6">
               Standard structure for every employee: Basic ${PAY.basicPct}% of CTC · HRA ${PAY.hraPct}% of Basic · Conveyance ${inr(PAY.conveyance)} · Special Allowance = balancing figure · Employer EPF ${PAY.epfPct}% and Gratuity ${PAY.gratuityPct}% of Basic (inside CTC) · Employee EPF ${PAY.epfPct}% of Basic · Professional Tax per Telangana slabs · TDS on new-regime slabs.
-              LOP = Gross Ã· 30 Ã— (absent days + ½ Ã— half-days + permission-excess days) from Attendance; Leave and On Duty (OD) are paid (no LOP). Permission hours beyond the monthly quota = excess hours Ã· daily working hours. Resignation: pending = salary on hold; accepted = pro-rata up to last working date (30-day basis). Forward moves a salary to next month's payroll.${locked ? ' Processed ' + timeAgo(run.processedAt) + '.' : ''}
+              LOP = Gross ÷ 30 × (absent days + ½ × half-days + permission-excess days) from Attendance; Leave and On Duty (OD) are paid (no LOP). Permission hours beyond the monthly quota = excess hours ÷ daily working hours. Resignation: pending = salary on hold; accepted = pro-rata up to last working date (30-day basis). Forward moves a salary to next month's payroll.${locked ? ' Processed ' + timeAgo(run.processedAt) + '.' : ''}
             </p>`}
           </div>
         </div>
@@ -2314,19 +2684,80 @@
       try { const d = JSON.parse(localStorage.getItem(LAST_LOGIN_KEY) || 'null'); if (d && d.at) { const x = new Date(d.at), p = n => String(n).padStart(2, '0'); t = p(x.getDate()) + ' ' + x.toLocaleString('en-GB', { month: 'short' }) + ' ' + x.getFullYear() + ', ' + p(x.getHours()) + ':' + p(x.getMinutes()); } } catch {}
       el.innerHTML = '<strong>Last login:</strong> ' + t;
     }
-    function doLogin(ev) {
+    function setLoginPreset(user, pass, btn) {
+      const uEl = document.getElementById('loginUser');
+      const pEl = document.getElementById('loginPass');
+      if (uEl) uEl.value = user;
+      if (pEl) pEl.value = pass;
+      document.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('active'));
+      if (btn) btn.classList.add('active');
+      const hint = document.getElementById('pwdHintText');
+      if (hint) hint.textContent = user === 'admin' ? 'Default: admin123' : 'DOB: 01011900';
+      const err = document.getElementById('loginErr');
+      if (err) err.textContent = '';
+    }
+
+    function toggleLoginPassword() {
+      const p = document.getElementById('loginPass');
+      const eye = document.getElementById('eyeIcon');
+      if (!p) return;
+      if (p.type === 'password') {
+        p.type = 'text';
+        if (eye) eye.innerHTML = '<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line>';
+      } else {
+        p.type = 'password';
+        if (eye) eye.innerHTML = '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle>';
+      }
+    }
+
+    async function doLogin(ev) {
       ev.preventDefault();
       const u = document.getElementById('loginUser').value.trim().toLowerCase();
       const p = document.getElementById('loginPass').value;
       const err = document.getElementById('loginErr');
-      const hrU = HR_USERS.find(x => x.user === u && x.pass === p);
-      if (hrU) {
-        session = { role: 'hr', user: hrU.user };
-      } else {
-        const emp = getEmployees().find(e => (e.empCode || '').toLowerCase() === u && e.status !== 'inactive');
-        if (!emp || p !== dobPassword(emp.dob)) { err.textContent = 'Invalid email/username or password'; return; }
-        session = { role: 'employee', empId: emp.id };
+      err.textContent = '';
+
+      let backendOk = false;
+      if (typeof window !== 'undefined' && location.protocol !== 'file:') {
+        try {
+          const res = await fetch('/api/auth/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username: u, password: p })
+          });
+          if (res.ok) {
+            const data = await res.json();
+            if (data.ok && data.user) {
+              backendOk = true;
+              if (data.user.role === 'ADMIN' || data.user.role === 'HR_MANAGER') {
+                session = { role: 'hr', user: data.user.username };
+              } else {
+                session = { role: 'employee', empId: data.user.empId };
+              }
+            }
+          } else if (res.status === 401) {
+            err.textContent = 'Invalid username or password';
+            return;
+          }
+        } catch (e) {
+          // offline fallback
+        }
       }
+
+      if (!backendOk) {
+        const hrU = HR_USERS.find(x => x.user === u && x.pass === p);
+        if (hrU) {
+          session = { role: 'hr', user: hrU.user };
+        } else {
+          const emp = getEmployees().find(e => (e.empCode || '').toLowerCase() === u && e.status !== 'inactive');
+          if (!emp || p !== dobPassword(emp.dob)) {
+            err.textContent = 'Invalid email/username or password';
+            return;
+          }
+          session = { role: 'employee', empId: emp.id };
+        }
+      }
+
       try { sessionStorage.setItem('hrms_session', JSON.stringify(session)); } catch {}
       try { localStorage.setItem(LAST_LOGIN_KEY, JSON.stringify({ at: new Date().toISOString() })); } catch {}
       err.textContent = '';
@@ -2929,7 +3360,7 @@
       const cur = selected !== undefined ? selected : el.value;
       const l = getDepartments().slice();
       if (cur && !l.some(x => sameName(x, cur))) l.push(cur);
-      el.innerHTML = '<option value="">Select</option>' + l.map(d => `<option value="${esc(d)}">${esc(d)}</option>`).join('') + '<option value="__new__">+ Add new department—¦</option>';
+      el.innerHTML = '<option value="">Select</option>' + l.map(d => `<option value="${esc(d)}">${esc(d)}</option>`).join('') + '<option value="__new__">+ Add new department...</option>';
       el.value = cur || '';
     }
 
@@ -2938,7 +3369,7 @@
       const cur = selected !== undefined ? selected : el.value;
       const names = designationsFor(document.getElementById('empDept').value).map(d => d.name);
       if (cur && !names.some(x => sameName(x, cur))) names.push(cur);
-      el.innerHTML = '<option value="">Select</option>' + names.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('') + '<option value="__new__">+ Add new designation—¦</option>';
+      el.innerHTML = '<option value="">Select</option>' + names.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('') + '<option value="__new__">+ Add new designation...</option>';
       el.value = cur || '';
     }
 
@@ -3258,7 +3689,7 @@
           <td>${g == null ? '<span class="dept-tag">No goals</span>' : pBar(g)}</td><td class="dept-tag">${a == null ? '—' : a + '%'}</td>
           <td class="dept-tag">${r?.self ? avgOf(r.self.ratings).toFixed(1) : '—'}</td><td>${r?.status === 'done' ? bandBadge(r.avg) : '<span class="dept-tag">—</span>'}${r?.status === 'done' && r.hr.reco !== 'No action' ? `<div class="dept-tag">${esc(r.hr.reco)}${r.hr.incr ? ' · ' + esc(r.hr.incr) + '%' : ''}</div>` : ''}</td>
           <td>${revStatus(r)}</td><td><div class="btn-group"><button class="btn ${r?.status === 'done' ? 'btn-secondary' : 'btn-primary'}" onclick="openReview('${e.id}')">${r?.status === 'done' ? 'View' : 'Review'}</button>${r?.status === 'done' ? `<button class="btn btn-edit" onclick="reopenReview('${e.id}')">Re-open</button>` : ''}</div></td></tr>`; }).join('') || '<tr><td colspan="7" class="empty-state">No active employees</td></tr>'}</tbody></table>`
-        : goals.length ? `<table><thead><tr><th>Employee</th><th>Goal</th><th>Weight</th><th>Target</th><th>Progress</th><th>Action</th></tr></thead><tbody>${goalRows(goals, true)}</tbody></table>` : '<div class="empty-state">No goals set for this cycle. Click —œ+ Add Goal—.</div>';
+        : goals.length ? `<table><thead><tr><th>Employee</th><th>Goal</th><th>Weight</th><th>Target</th><th>Progress</th><th>Action</th></tr></thead><tbody>${goalRows(goals, true)}</tbody></table>` : '<div class="empty-state">No goals set for this cycle. Click "+ Add Goal—.</div>';
       return `
         <div class="stats-grid">
           ${stat('Employees in Review', emps.length, 'blue')}${stat('Self-reviews Submitted', revs.filter(r => r?.self).length, 'purple')}
@@ -3271,7 +3702,7 @@
           </div>
           <div class="card-body table-wrap">${body}</div>
         </div>
-        <p class="dept-tag" style="padding:1rem 0;line-height:1.6">Cycle: ${formatDate(c.from)} — ${formatDate(c.to)}. Employees see their goals and self-assess under —œMy Performance—; goal % is weight-based; attendance % comes from marked attendance in the cycle (holidays and leave excluded). Final rating = average of HR ratings.</p>`;
+        <p class="dept-tag" style="padding:1rem 0;line-height:1.6">Cycle: ${formatDate(c.from)} — ${formatDate(c.to)}. Employees see their goals and self-assess under "My Performance—; goal % is weight-based; attendance % comes from marked attendance in the cycle (holidays and leave excluded). Final rating = average of HR ratings.</p>`;
     }
 
     function renderMyPerf() {
@@ -3377,12 +3808,12 @@
           <td>${esc(jn(c.jobId))}</td><td class="dept-tag">${esc(c.qual || '')}${c.memNo ? '<div>' + esc(c.memNo) + '</div>' : ''}</td><td>${c.exp !== '' && c.exp != null ? c.exp + ' yr' : '—'}</td>
           <td class="dept-tag">${c.cctc ? inr(+c.cctc) : '—'} → ${c.ectc ? inr(+c.ectc) : '—'}</td><td class="dept-tag">${c.notice ? c.notice + ' d' : '—'}</td>
           <td>${c.empId ? stageBadge('Hired') : `<select class="att-status" onchange="setCandStage('${c.id}',this.value)">${opts(REC_STAGES, c.stage)}</select>`}${c.interview ? `<div class="dept-tag">Interview ${formatDate(c.interview)}</div>` : ''}</td>
-          <td><div class="btn-group" style="flex-wrap:nowrap"><button class="btn btn-edit" onclick="openCand('${c.id}')">Edit</button>${c.stage === 'Offer' && !c.empId ? `<button class="btn btn-approve" onclick="hireCand('${c.id}')">Hire</button>` : ''}<button class="btn btn-delete" onclick="deleteCand('${c.id}')">Delete</button></div></td></tr>`).join('')}</tbody></table>` : '<div class="empty-state">No candidates found. Click —œ+ Add Candidate—.</div>';
+          <td><div class="btn-group" style="flex-wrap:nowrap"><button class="btn btn-edit" onclick="openCand('${c.id}')">Edit</button>${c.stage === 'Offer' && !c.empId ? `<button class="btn btn-approve" onclick="hireCand('${c.id}')">Hire</button>` : ''}<button class="btn btn-delete" onclick="deleteCand('${c.id}')">Delete</button></div></td></tr>`).join('')}</tbody></table>` : '<div class="empty-state">No candidates found. Click "+ Add Candidate—.</div>';
       const jobTable = jobs.length ? `<table><thead><tr><th>Position</th><th>Practice Area</th><th>Qualification</th><th>Exp.</th><th>Type</th><th>Vacancies</th><th>Candidates</th><th>Status</th><th>Action</th></tr></thead><tbody>${jobs.map(j => `<tr>
           <td><strong>${esc(j.title)}</strong><div class="dept-tag">${esc(j.dept)}${j.loc ? ' · ' + esc(j.loc) : ''}${j.salary ? ' · ' + esc(j.salary) : ''}</div></td><td class="dept-tag">${esc(j.area)}</td><td class="dept-tag">${esc(j.qual)}</td><td>${esc(j.exp) || '—'}</td><td class="dept-tag">${esc(j.type)}</td>
           <td>${j.vacancies} <span class="dept-tag">(${n(c => c.jobId === j.id && c.stage === 'Hired')} filled)</span></td><td>${n(c => c.jobId === j.id)}</td>
           <td><span class="badge ${{ Open: 'active', 'On Hold': 'pending', Closed: 'inactive' }[j.status]}">${j.status}</span></td>
-          <td><div class="btn-group" style="flex-wrap:nowrap"><button class="btn btn-edit" onclick="openJob('${j.id}')">Edit</button><button class="btn btn-delete" onclick="deleteJob('${j.id}')">Delete</button></div></td></tr>`).join('')}</tbody></table>` : '<div class="empty-state">No openings yet. Click —œ+ New Opening—.</div>';
+          <td><div class="btn-group" style="flex-wrap:nowrap"><button class="btn btn-edit" onclick="openJob('${j.id}')">Edit</button><button class="btn btn-delete" onclick="deleteJob('${j.id}')">Delete</button></div></td></tr>`).join('')}</tbody></table>` : '<div class="empty-state">No openings yet. Click "+ New Opening—.</div>';
       return `
         <div class="stats-grid">${stat('Open Positions', jobs.filter(j => j.status === 'Open').length, 'blue')}${stat('Active Candidates', n(c => !['Hired', 'Rejected'].includes(c.stage)), 'purple')}${stat('In Interview', n(c => /Interview/.test(c.stage)), 'amber')}${stat('Offers / Hired', n(c => c.stage === 'Offer') + ' / ' + n(c => c.stage === 'Hired'), 'green')}</div>
         <div class="card"><div class="card-header" style="flex-wrap:wrap;gap:.6rem">
@@ -3390,7 +3821,7 @@
             ${recTab === 'cands' ? `<select style="${sel}" onchange="setRec('stage',this.value)"><option value="all">All stages</option>${REC_STAGES.map(s => `<option ${s === recStageF ? 'selected' : ''}>${s}</option>`).join('')}</select><select style="${sel}" onchange="setRec('job',this.value)"><option value="all">All positions</option>${jobs.map(j => `<option value="${j.id}" ${j.id === recJobF ? 'selected' : ''}>${esc(j.title)}</option>`).join('')}</select>` : ''}</div>
           <div class="btn-group"><button class="btn btn-secondary" onclick="openJob()">+ New Opening</button><button class="btn btn-primary" onclick="openCand()">+ Add Candidate</button></div></div>
           <div class="card-body table-wrap">${recTab === 'cands' ? candTable : jobTable}</div></div>
-        <p class="dept-tag" style="padding:1rem 0;line-height:1.6">Pipeline: Applied → Screening → Technical Interview → Partner / Final Interview → Offer → Hired. —œHire— on an Offer-stage candidate creates the employee record (probation) from the opening's position and department.</p>`;
+        <p class="dept-tag" style="padding:1rem 0;line-height:1.6">Pipeline: Applied → Screening → Technical Interview → Partner / Final Interview → Offer → Hired. "Hire— on an Offer-stage candidate creates the employee record (probation) from the opening's position and department.</p>`;
     }
 
 
@@ -3465,17 +3896,17 @@
     function itemsFor(p, iso, preview) {
       const t = popType(p);
       if (t === 'festival') return preview || popupOn(p, iso) ? [{ image: p.image }] : [];
-      if (t === 'achievement') { if (!preview && !popupOn(p, iso)) return []; const e = findEmployee(p.empId); return e ? [{ image: p.image, icon: 'ðŸ†', heading: `Congratulations ${e.name}! ðŸŽ‰`, sub: p.title, msg: p.msg }] : []; }
+      if (t === 'achievement') { if (!preview && !popupOn(p, iso)) return []; const e = findEmployee(p.empId); return e ? [{ image: p.image, icon: '🏆', heading: `Congratulations ${e.name}! 🎉`, sub: p.title, msg: p.msg }] : []; }
       let emps = getEmployees().filter(e => e.status !== 'inactive' && /^\d{4}-\d{2}-\d{2}/.test(e.dob || '') && e.dob.slice(5, 10) === iso.slice(5));
       if (preview && !emps.length) emps = getEmployees().slice(0, 1);
-      return emps.map(e => ({ image: p.image, icon: 'ðŸŽ‚', heading: `Happy Birthday, ${e.name}! ðŸŽ‚`, msg: p.msg }));
+      return emps.map(e => ({ image: p.image, icon: '🎂', heading: `Happy Birthday, ${e.name}! 🎂`, msg: p.msg }));
     }
     function showPopupImage(id) { const p = getPopups().find(x => x.id === id); if (p) { popupQueue = []; const it = itemsFor(p, localISO(), true); if (it.length) showPopupItem(it[0]); } }
     function showPopupItem(it) {
       document.getElementById('popupShow')?.remove();
       const d = document.createElement('div'); d.id = 'popupShow';
       d.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.65);z-index:9999;display:flex;align-items:center;justify-content:center;padding:1rem';
-      const top = it.image ? `<img src="${it.image}" style="display:block;max-width:100%;max-height:${it.heading ? '55vh' : 'calc(92vh - 1.2rem)'};border-radius:10px;margin:auto" />` : it.heading ? `<div style="font-size:4rem;text-align:center;padding:1.2rem;background:linear-gradient(135deg,#dbeafe,#ede9fe);border-radius:10px">${it.icon || 'ðŸŽ‰'}</div>` : '';
+      const top = it.image ? `<img src="${it.image}" style="display:block;max-width:100%;max-height:${it.heading ? '55vh' : 'calc(92vh - 1.2rem)'};border-radius:10px;margin:auto" />` : it.heading ? `<div style="font-size:4rem;text-align:center;padding:1.2rem;background:linear-gradient(135deg,#dbeafe,#ede9fe);border-radius:10px">${it.icon || '🎉'}</div>` : '';
       const txt = it.heading ? `<div style="padding:1rem 1rem .6rem;text-align:center"><div style="font-size:1.35rem;font-weight:700;color:#1e3a8a">${esc(it.heading)}</div>${it.sub ? `<div style="font-size:1.05rem;font-weight:600;margin-top:.3rem">${esc(it.sub)}</div>` : ''}${it.msg ? `<div style="margin-top:.6rem;color:#475569;line-height:1.6">${esc(it.msg)}</div>` : ''}</div>` : '';
       d.innerHTML = `<div style="position:relative;max-width:min(92vw,${it.heading ? 520 : 760}px);max-height:92vh;overflow:auto;background:#fff;border-radius:14px;padding:.6rem;box-shadow:0 20px 40px rgba(0,0,0,.35)"><button onclick="closePopup()" title="Close" style="position:absolute;top:8px;right:8px;z-index:1;width:32px;height:32px;border-radius:50%;border:0;background:#0f172a;color:#fff;font-size:16px;cursor:pointer">✕</button>${top}${txt}</div>`;
       d.addEventListener('click', e => { if (e.target === d) closePopup(); });
@@ -3498,36 +3929,130 @@
       if (popupQueue.length) closePopup();
     }
 
-    function renderPopupCard() {
+        function renderPopupCard() {
       const iso = localISO(), emps = getEmployees().filter(e => e.status !== 'inactive');
       const list = getPopups().slice().sort((a, b) => popFrom(a).localeCompare(popFrom(b)));
       const st = p => popType(p) === 'birthday' ? 'Auto' : p.yearly ? (popupOn(p, iso) ? 'Showing now' : 'Every year') : popTo(p) < iso ? 'Past' : popFrom(p) > iso ? 'Upcoming' : 'Showing now';
-      const inp = 'padding:.5rem .7rem;border:1px solid var(--border);border-radius:8px;font-family:inherit;font-size:.85rem';
       return `
-        <div class="card">
-          <div class="card-header"><h2>Greeting Popups (Festival / Birthday / Achievement)</h2></div>
-          <div class="card-body" style="padding:1.25rem">
-            <div style="display:flex;gap:.6rem;flex-wrap:wrap;align-items:center;margin-bottom:1rem;padding:.7rem .9rem;background:#f8fafc;border-radius:8px"><label style="font-size:.85rem">Auto-close popup after</label><input id="popAuto" type="number" min="0" max="3600" value="${popAutoSecs()}" style="${inp};width:90px" /><span class="dept-tag">seconds (0 = stay until closed manually)</span><button class="btn btn-primary" style="padding:.5rem 1rem" onclick="savePopCfg()">Save</button></div>
-            <p class="dept-tag" style="margin-bottom:1rem;line-height:1.6">Popups show every time anyone logs in during the chosen period (From date to To date, all day). <strong>Birthday Wishes</strong> are automatic: set it up once and each employee's birthday (from their date of birth) triggers a popup. <strong>Achievement</strong> popups congratulate an employee on a chosen date.</p>
-            <div style="display:flex;gap:.6rem;flex-wrap:wrap;align-items:center;margin-bottom:1rem">
-              <select id="popKind" onchange="popFormType()" style="${inp}">${Object.entries(POP_KINDS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select>
-              <select id="popEmp" style="${inp};display:none"><option value="">Select employee</option>${emps.map(e => `<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select>
-              <input id="popTitle" list="popIdeas" placeholder="Occasion e.g. Happy Diwali" style="${inp};flex:1;min-width:190px" />
-              <datalist id="popIdeas">${POPUP_IDEAS.map(x => `<option value="${x}">`).join('')}</datalist><datalist id="achIdeas">${ACHIEVE_IDEAS.map(x => `<option value="${x}">`).join('')}</datalist>
-              <span id="popDates" style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap"><label style="font-size:.78rem;display:flex;gap:.3rem;align-items:center">From <input type="date" id="popFrom_" style="${inp}" onchange="if(!popTo_.value||popTo_.value<this.value)popTo_.value=this.value" /></label><label style="font-size:.78rem;display:flex;gap:.3rem;align-items:center">To <input type="date" id="popTo_" style="${inp}" /></label></span>
-              <input type="file" id="popFile" accept="image/*" onchange="popupPick(this)" style="${inp};max-width:240px" />
-              <label id="popYearlyWrap" style="font-size:.8rem;display:flex;gap:.35rem;align-items:center"><input type="checkbox" id="popYearly" /> Repeat every year</label>
-              <textarea id="popMsg" rows="2" style="${inp};display:none;flex-basis:100%"></textarea>
-              <button class="btn btn-primary" style="padding:.55rem 1rem" onclick="addPopup()">+ Save Popup</button>
+        <div class="card" style="margin-bottom:1.5rem">
+          <div class="card-header">
+            <div>
+              <h2>Greeting Popups &amp; Celebrations</h2>
+              <div class="dept-tag" style="margin-top:2px">Configure automated login greetings, festival announcements, and birthday wishes</div>
             </div>
-            <div class="dept-tag" style="margin:-.4rem 0 .8rem">Image: required for festivals; optional for birthdays (shown above the wishes) and achievements (e.g. photo or certificate).</div>
-            <div id="popPrev" style="margin-bottom:1rem"></div>
-            <div class="table-wrap">${list.length ? `<table><thead><tr><th>Image</th><th>Type / Occasion</th><th>Date</th><th>Status</th><th>Action</th></tr></thead><tbody>${list.map(p => { const t = popType(p), e = t === 'achievement' ? findEmployee(p.empId) : null; return `<tr>
-              <td>${p.image ? `<img src="${p.image}" style="height:46px;border-radius:6px;border:1px solid var(--border)" />` : `<span style="font-size:1.6rem">${t === 'birthday' ? 'ðŸŽ‚' : 'ðŸ†'}</span>`}</td>
-              <td><strong>${esc(p.title)}</strong><div class="dept-tag">${POP_KINDS[t]}${e ? ' · ' + esc(e.name) : ''}</div></td>
-              <td class="dept-tag">${t === 'birthday' ? "On each employee's birthday" : popRange(p) + ' · All day'}</td>
-              <td><span class="badge ${!p.enabled ? 'inactive' : st(p) === 'Past' ? 'on-leave' : 'active'}">${p.enabled ? st(p) : 'Disabled'}</span></td>
-              <td><div class="btn-group" style="flex-wrap:nowrap"><button class="btn btn-edit" onclick="showPopupImage('${p.id}')">Preview</button>${t === 'birthday' ? '' : `<button class="btn btn-secondary" onclick="editPopupDates('${p.id}')">Dates</button>`}<button class="btn btn-secondary" onclick="togglePopup('${p.id}')">${p.enabled ? 'Disable' : 'Enable'}</button><button class="btn btn-delete" onclick="deletePopup('${p.id}')">Delete</button></div></td></tr>`; }).join('')}</tbody></table>` : '<div class="empty-state">No popups scheduled</div>'}</div>
+            <div style="display:flex; align-items:center; gap:0.6rem; background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:0.35rem 0.75rem">
+              <label style="font-size:0.78rem; font-weight:600; color:#475569">Auto-close timer:</label>
+              <input id="popAuto" type="number" min="0" max="3600" value="${popAutoSecs()}" style="width:65px; padding:0.25rem 0.5rem; text-align:center" />
+              <span class="dept-tag">sec</span>
+              <button class="btn btn-secondary btn-sm" onclick="savePopCfg()">Save</button>
+            </div>
+          </div>
+          <div class="card-body" style="padding:1.5rem">
+            <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:12px; padding:1.25rem; margin-bottom:1.5rem">
+              <div style="font-size:0.86rem; font-weight:700; color:#0f172a; margin-bottom:0.85rem">Schedule New Greeting or Announcement</div>
+              
+              <div class="settings-form-grid" style="margin-bottom:1rem">
+                <div class="settings-form-field">
+                  <label>Occasion Type</label>
+                  <select id="popKind" onchange="popFormType()" style="width:100%">
+                    ${Object.entries(POP_KINDS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}
+                  </select>
+                </div>
+                <div class="settings-form-field" id="popEmpWrap" style="display:none">
+                  <label>Target Employee</label>
+                  <select id="popEmp" style="width:100%">
+                    <option value="">Select employee...</option>
+                    ${emps.map(e => `<option value="${e.id}">${esc(e.name)} (${esc(e.empCode || '')})</option>`).join('')}
+                  </select>
+                </div>
+                <div class="settings-form-field" style="grid-column: span 2">
+                  <label>Celebration Title / Greeting Header</label>
+                  <input id="popTitle" list="popIdeas" placeholder="e.g. Happy Diwali, Happy New Year" style="width:100%" />
+                  <datalist id="popIdeas">${POPUP_IDEAS.map(x => `<option value="${x}">`).join('')}</datalist>
+                  <datalist id="achIdeas">${ACHIEVE_IDEAS.map(x => `<option value="${x}">`).join('')}</datalist>
+                </div>
+              </div>
+
+              <div id="popDates" class="settings-form-grid" style="margin-bottom:1rem">
+                <div class="settings-form-field">
+                  <label>Active From Date</label>
+                  <input type="date" id="popFrom_" style="width:100%" onchange="if(!popTo_.value||popTo_.value<this.value)popTo_.value=this.value" />
+                </div>
+                <div class="settings-form-field">
+                  <label>Active To Date</label>
+                  <input type="date" id="popTo_" style="width:100%" />
+                </div>
+                <div class="settings-form-field">
+                  <label>Banner Image (Required for festivals)</label>
+                  <input type="file" id="popFile" accept="image/*" onchange="popupPick(this)" style="width:100%" />
+                </div>
+              </div>
+
+              <div class="settings-form-field" style="margin-bottom:1rem">
+                <label>Personal Message / Congratulatory Note (Optional)</label>
+                <textarea id="popMsg" rows="2" placeholder="Write custom wishes shown to the employee or team..." style="width:100%"></textarea>
+              </div>
+
+              <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.75rem">
+                <label id="popYearlyWrap" style="display:flex; gap:0.5rem; align-items:center; font-size:0.82rem; font-weight:600; color:#475569; cursor:pointer">
+                  <input type="checkbox" id="popYearly" style="width:16px; height:16px" />
+                  <span>Repeat annually for recurring celebrations</span>
+                </label>
+                <button class="btn btn-primary" onclick="addPopup()">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                  <span>Publish Greeting Popup</span>
+                </button>
+              </div>
+              <div id="popPrev" style="margin-top:0.75rem"></div>
+            </div>
+
+            <div class="table-wrap">
+              ${list.length ? `
+                <table>
+                  <thead>
+                    <tr>
+                      <th style="width:70px">Media</th>
+                      <th>Greeting &amp; Occasion</th>
+                      <th>Active Duration</th>
+                      <th>Status</th>
+                      <th style="text-align:right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${list.map(p => {
+                      const t = popType(p);
+                      const e = t === 'achievement' ? findEmployee(p.empId) : null;
+                      return `
+                        <tr>
+                          <td>
+                            ${p.image ? `<img src="${p.image}" style="height:44px; width:44px; object-fit:cover; border-radius:8px; border:1px solid #e2e8f0" />` : `<div style="width:44px; height:44px; display:flex; align-items:center; justify-content:center; background:#eff6ff; border-radius:8px; font-size:1.4rem">${t === 'birthday' ? '🎂' : '🏆'}</div>`}
+                          </td>
+                          <td>
+                            <div style="font-weight:700; color:#0f172a">${esc(p.title)}</div>
+                            <div class="dept-tag">${POP_KINDS[t]}${e ? ' · ' + esc(e.name) : ''}</div>
+                          </td>
+                          <td class="dept-tag">
+                            ${t === 'birthday' ? "Automatic on each employee's DOB" : popRange(p) + ' · All Day'}
+                          </td>
+                          <td>
+                            <span class="badge ${!p.enabled ? 'inactive' : st(p) === 'Past' ? 'on-leave' : 'active'}">
+                              ${p.enabled ? st(p) : 'Disabled'}
+                            </span>
+                          </td>
+                          <td style="text-align:right">
+                            <div class="btn-group" style="justify-content:flex-end">
+                              <button class="btn btn-secondary btn-sm" onclick="showPopupImage('${p.id}')">Preview</button>
+                              <button class="btn btn-secondary btn-sm" onclick="togglePopup('${p.id}')">${p.enabled ? 'Disable' : 'Enable'}</button>
+                              <button class="btn btn-delete btn-sm" onclick="deletePopup('${p.id}')">Delete</button>
+                            </div>
+                          </td>
+                        </tr>
+                      `;
+                    }).join('')}
+                  </tbody>
+                </table>
+              ` : '<div class="empty-state">No scheduled greetings or popups configured.</div>'}
+            </div>
           </div>
         </div>`;
     }
@@ -3548,7 +4073,7 @@
       selfieGeo = null;
       perfModalShow(kind === 'in' ? 'Check In — Selfie' : 'Check Out — Selfie', `
         <video id="selfieVid" autoplay playsinline muted style="width:100%;max-height:300px;background:#0f172a;border-radius:10px;transform:scaleX(-1)"></video>
-        <div id="selfieMsg" class="dept-tag" style="margin-top:.6rem;line-height:1.6">Starting camera and location—¦</div>${lateWarn(kind)}`,
+        <div id="selfieMsg" class="dept-tag" style="margin-top:.6rem;line-height:1.6">Starting camera and location...</div>${lateWarn(kind)}`,
         `<button class="btn btn-secondary" onclick="closeModal('perfModal')">Cancel</button><button class="btn btn-primary" id="selfieBtn" onclick="selfieSubmit('${kind}')">Capture &amp; Submit</button>`);
       navigator.mediaDevices?.getUserMedia({ video: { facingMode: 'user' }, audio: false }).then(st => { selfieStream = st; selfieVid.srcObject = st; })
         .catch(() => { selfieMsg.textContent = 'Camera not available. Allow camera access (page must be on HTTPS or localhost).'; });
@@ -3659,7 +4184,7 @@
     async function selfieSubmit(kind) {
       const cfg = getFaceCfg(), v = document.getElementById('selfieVid');
       if (cfg.mode === 'off' || isHR() || !selfieStream || !v || !v.videoWidth || !selfieGeo) return selfieSubmitBase(kind, null);
-      const btn = document.querySelector('#perfModal .btn-primary'), old = btn && btn.textContent; if (btn) { btn.disabled = true; btn.textContent = 'Checking face—¦'; }
+      const btn = document.querySelector('#perfModal .btn-primary'), old = btn && btn.textContent; if (btn) { btn.disabled = true; btn.textContent = 'Checking face...'; }
       let face; try { face = await faceCheck(session.empId, v, +cfg.threshold || 0.5); } catch (e) { console.warn('Face check unavailable:', e.message); face = { state: 'unchecked' }; }
       if (btn) { btn.disabled = false; btn.textContent = old; }
       if (cfg.mode === 'block' && (FACE_FLAG.includes(face.state))) {
@@ -3690,21 +4215,62 @@
       save(STORAGE_KEYS.faceCfg, { mode: document.getElementById('faceMode').value, threshold: t }); showToast('Face matching settings saved', 'success'); refreshCurrentPage();
     }
     async function faceTest() {
-      const o = document.getElementById('faceOut'); o.innerHTML = 'Loading face library and models—¦';
+      const o = document.getElementById('faceOut'); o.innerHTML = 'Loading face library and models...';
       try { await faceLoad(); o.innerHTML = '<span style="color:#16a34a;font-weight:600">Face system is working</span> (detector: ' + (FD.det === 'ssd' ? 'SSD' : 'Tiny') + ').'; } catch (e) { o.innerHTML = '<span style="color:#dc2626;font-weight:600">Not ready:</span> ' + esc(e.message); }
     }
     async function faceEnrollAll() {
-      const o = document.getElementById('faceOut'); o.innerHTML = 'Reading registered photos—¦'; let ok = 0; const bad = [];
+      const o = document.getElementById('faceOut'); o.innerHTML = 'Reading registered photos...'; let ok = 0; const bad = [];
       try { await faceLoad(); } catch (e) { o.innerHTML = '<span style="color:#dc2626">Not ready:</span> ' + esc(e.message); return; }
       for (const e of getEmployees().filter(x => x.status !== 'inactive')) { try { const r = await faceRef(e.id); if (r && r !== 'noface') ok++; else bad.push(e.name + (r === null ? ' (no photo)' : ' (no clear face)')); } catch { bad.push(e.name + ' (error)'); } }
       o.innerHTML = `<strong>${ok}</strong> photo(s) ready.${bad.length ? ' <span style="color:#dc2626">Replace these photos with a clear, front-facing one:</span> ' + bad.map(esc).join(', ') : ''}`;
     }
-    function renderFaceCard() {
-      const c = getFaceCfg(), inp = 'padding:.5rem .7rem;border:1px solid var(--border);border-radius:8px;font-family:inherit;font-size:.85rem';
-      return `<div class="card"><div class="card-header"><h2>Face Matching (selfie vs registered photo)</h2></div><div class="card-body" style="padding:1.25rem">
-        <p class="dept-tag" style="margin-bottom:1rem;line-height:1.6"><strong>Off</strong>: HR compares by eye. <strong>Flag</strong>: attendance is recorded and a mismatch is sent to HR for review. <strong>Block</strong>: a mismatch or an unclear face is refused. Lower strictness number = stricter (0.50 is a good start). If the face system is not available, check-in still works and is marked "Not checked".</p>
-        <div style="display:flex;gap:.6rem;flex-wrap:wrap;align-items:center;margin-bottom:.9rem"><select id="faceMode" style="${inp}"><option value="off" ${c.mode === 'off' ? 'selected' : ''}>Off</option><option value="warn" ${c.mode === 'warn' ? 'selected' : ''}>Flag mismatches for HR</option><option value="block" ${c.mode === 'block' ? 'selected' : ''}>Block mismatches</option></select><span class="dept-tag">Strictness</span><input id="faceThr" type="number" step="0.01" min="0.3" max="0.7" value="${c.threshold}" style="${inp};width:90px" /><button class="btn btn-primary" style="padding:.55rem 1rem" onclick="saveFaceCfg()">Save</button><button class="btn btn-secondary" onclick="faceTest()">Test face system</button><button class="btn btn-secondary" onclick="faceEnrollAll()">Check registered photos</button></div>
-        <div id="faceOut" class="dept-tag" style="line-height:1.7"></div></div></div>`;
+        function renderFaceCard() {
+      const c = getFaceCfg();
+      return `
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2>Facial Recognition &amp; AI Anti-Spoofing</h2>
+              <div class="dept-tag" style="margin-top:2px">Compare live check-in selfies against registered employee photos</div>
+            </div>
+          </div>
+          <div class="card-body" style="padding:1.5rem">
+            <div class="settings-form-grid" style="align-items:flex-end">
+              <div class="settings-form-field">
+                <label>Operational Mode</label>
+                <select id="faceMode" style="width:100%">
+                  <option value="off" ${c.mode === 'off' ? 'selected' : ''}>Off (HR reviews visually)</option>
+                  <option value="warn" ${c.mode === 'warn' ? 'selected' : ''}>Flag Mismatches for HR Approval</option>
+                  <option value="block" ${c.mode === 'block' ? 'selected' : ''}>Block Check-in on Mismatch</option>
+                </select>
+                <div class="helper-text">Select how AI mismatches are handled during employee check-in</div>
+              </div>
+              <div class="settings-form-field">
+                <label>Tolerance Strictness Threshold</label>
+                <input id="faceThr" type="number" step="0.01" min="0.3" max="0.7" value="${c.threshold}" style="width:100%" />
+                <div class="helper-text">0.50 recommended (lower value = stricter face matching)</div>
+              </div>
+              <div class="settings-form-field">
+                <button class="btn btn-primary" onclick="saveFaceCfg()">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/></svg>
+                  <span>Save AI Config</span>
+                </button>
+              </div>
+            </div>
+
+            <div class="btn-group" style="margin-bottom:1rem">
+              <button class="btn btn-secondary" onclick="faceTest()">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                <span>Test Face Matching System</span>
+              </button>
+              <button class="btn btn-secondary" onclick="faceEnrollAll()">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg>
+                <span>Validate Registered Employee Photos</span>
+              </button>
+            </div>
+            <div id="faceOut" class="dept-tag" style="line-height:1.7"></div>
+          </div>
+        </div>`;
     }
 
     // ========== SELFIE PREVIEW (admin) ==========
@@ -3726,14 +4292,84 @@
       document.body.appendChild(d);
     }
     document.addEventListener('keydown', ev => { if (ev.key === 'Escape') document.getElementById('selfiePrev')?.remove(); });
-    function renderSelfieCard() {
-      const g = getGeo(), inp = 'padding:.5rem .7rem;border:1px solid var(--border);border-radius:8px;font-family:inherit;font-size:.85rem', rows = getSelfies().slice(0, 20);
-      return `<div class="card"><div class="card-header"><h2>Self Attendance (Selfie + Location)</h2></div><div class="card-body" style="padding:1.25rem">
-        <p class="dept-tag" style="margin-bottom:1rem;line-height:1.6">Employees check in/out from —œMy Attendance—. Set the office location and allowed radius so check-in works only at the office. Leave blank to allow from anywhere.</p>
-        <div style="display:flex;gap:.6rem;flex-wrap:wrap;align-items:center;margin-bottom:1rem">
-          <input id="geoLat" placeholder="Latitude" value="${g.lat ?? ''}" style="${inp};width:130px" /><input id="geoLng" placeholder="Longitude" value="${g.lng ?? ''}" style="${inp};width:130px" /><input id="geoRad" type="number" placeholder="Radius (m)" value="${g.radius ?? 200}" style="${inp};width:120px" />
-          <button class="btn btn-secondary" onclick="useMyLocation()">Use my current location</button><button class="btn btn-primary" style="padding:.55rem 1rem" onclick="saveGeo()">Save</button></div>
-        <div class="table-wrap">${rows.length ? `<table><thead><tr><th>Selfie</th><th>Employee</th><th>Date</th><th>Type</th><th>Time</th><th>Distance</th><th>Face</th></tr></thead><tbody>${rows.map(x => `<tr><td><img src="${x.photo}" title="Click to preview" onclick="selfiePreview('${x.id}')" style="height:48px;border-radius:6px;cursor:zoom-in" /></td><td>${esc(findEmployee(x.empId)?.name || '—')}</td><td class="dept-tag">${formatDate(x.date)}</td><td>${x.kind === 'in' ? 'Check In' : 'Check Out'}</td><td>${x.time}</td><td class="dept-tag">${x.dist != null ? x.dist + ' m' : 'No geofence'}</td><td>${faceBadge(x.face, x.blocked)}</td></tr>`).join('')}</tbody></table>` : '<div class="empty-state">No selfie check-ins yet (photos are kept for 3 days)</div>'}</div></div></div>`;
+        function renderSelfieCard() {
+      const g = getGeo(), rows = getSelfies().slice(0, 20);
+      return `
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2>Office Geofencing &amp; GPS Radar</h2>
+              <div class="dept-tag" style="margin-top:2px">Restrict employee mobile punch-ins to physical office boundaries</div>
+            </div>
+          </div>
+          <div class="card-body" style="padding:1.5rem">
+            <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:12px; padding:1.25rem; margin-bottom:1.5rem">
+              <div style="font-size:0.86rem; font-weight:700; color:#0f172a; margin-bottom:0.85rem">Office Geolocation Coordinates</div>
+              <div class="settings-form-grid" style="margin-bottom:1rem">
+                <div class="settings-form-field">
+                  <label>Office Latitude</label>
+                  <input id="geoLat" placeholder="e.g. 17.4435" value="${g.lat ?? ''}" style="width:100%" />
+                </div>
+                <div class="settings-form-field">
+                  <label>Office Longitude</label>
+                  <input id="geoLng" placeholder="e.g. 78.3842" value="${g.lng ?? ''}" style="width:100%" />
+                </div>
+                <div class="settings-form-field">
+                  <label>Allowed Radius (Meters)</label>
+                  <input id="geoRad" type="number" placeholder="200" value="${g.radius ?? 200}" style="width:100%" />
+                </div>
+              </div>
+              <div class="btn-group">
+                <button class="btn btn-secondary" onclick="useMyLocation()">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v2M12 20v2M2 12h2M20 12h2"/><circle cx="12" cy="12" r="7"/></svg>
+                  <span>Detect My Current GPS Location</span>
+                </button>
+                <button class="btn btn-primary" onclick="saveGeo()">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/></svg>
+                  <span>Save Geofence</span>
+                </button>
+              </div>
+            </div>
+
+            <div style="font-weight:700; color:#0f172a; margin-bottom:0.75rem">Recent Punch-in Audit Gallery</div>
+            <div class="table-wrap">
+              ${rows.length ? `
+                <table>
+                  <thead>
+                    <tr>
+                      <th style="width:60px">Selfie</th>
+                      <th>Employee</th>
+                      <th>Date</th>
+                      <th>Punch Type</th>
+                      <th>Time</th>
+                      <th>Distance</th>
+                      <th>AI Verification</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${rows.map(x => `
+                      <tr>
+                        <td>
+                          <img src="${x.photo}" title="Click to inspect" onclick="selfiePreview('${x.id}')" style="height:44px; width:44px; object-fit:cover; border-radius:8px; cursor:zoom-in; border:1px solid #e2e8f0" />
+                        </td>
+                        <td>
+                          <div style="font-weight:600; color:#0f172a">${esc(findEmployee(x.empId)?.name || '—')}</div>
+                        </td>
+                        <td class="dept-tag">${formatDate(x.date)}</td>
+                        <td>
+                          <span class="badge ${x.kind === 'in' ? 'active' : 'inactive'}">${x.kind === 'in' ? 'Check In' : 'Check Out'}</span>
+                        </td>
+                        <td>${x.time}</td>
+                        <td class="dept-tag">${x.dist != null ? x.dist + ' m' : 'No restriction'}</td>
+                        <td>${faceBadge(x.face, x.blocked)}</td>
+                      </tr>
+                    `).join('')}
+                  </tbody>
+                </table>
+              ` : '<div class="empty-state">No selfie punch-ins recorded yet (photos stored for 3 days).</div>'}
+            </div>
+          </div>
+        </div>`;
     }
 
 
@@ -4016,8 +4652,182 @@
           </div>
         </div>`;
     }
+        function renderDashboard() {
+      const emps = getEmployees();
+      const leaves = getLeaves();
+      const pendingLeaves = leaves.filter(l => l.status === 'pending');
+      const onLeave = emps.filter(e => e.status === 'on-leave').length;
+      const active = emps.filter(e => e.status === 'active' || e.status === 'probation').length;
+      const activities = getActivities().slice(0, 6);
+
+      const kpis = `
+        <div class="stats-grid">
+          <div class="stat-card">
+            <div class="stat-info">
+              <h3>Total Employees</h3>
+              <div class="value">${emps.length}</div>
+              <div class="change up">${active} active staff</div>
+            </div>
+            <div class="stat-icon blue">
+              <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z"/></svg>
+            </div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-info">
+              <h3>Active Staff</h3>
+              <div class="value">${active}</div>
+              <div class="change up">${emps.length ? Math.round(active / emps.length * 100) : 0}% attendance rate</div>
+            </div>
+            <div class="stat-icon green">
+              <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+            </div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-info">
+              <h3>On Leave</h3>
+              <div class="value">${onLeave}</div>
+              <div class="change down">${pendingLeaves.length} pending ${pendingLeaves.length === 1 ? 'request' : 'requests'}</div>
+            </div>
+            <div class="stat-icon amber">
+              <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75m-18 0v-7.5A2.25 2.25 0 015.25 9h13.5A2.25 2.25 0 0121 11.25v7.5"/></svg>
+            </div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-info">
+              <h3>Pending Approvals</h3>
+              <div class="value">${pendingLeaves.length}</div>
+              <div class="change up">Awaiting review</div>
+            </div>
+            <div class="stat-icon purple">
+              <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+            </div>
+          </div>
+        </div>
+      `;
+
+      const mainGrids = `
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-header">
+              <h2>Recent Employees</h2>
+              <a href="#" class="link" onclick="navigate('employees'); return false;">View all</a>
+            </div>
+            <div class="card-body table-wrap">
+              ${emps.length === 0 ? '<div class="empty-state">No employees yet. Add one!</div>' : `
+              <table>
+                <thead><tr><th>Employee</th><th>Department</th><th>Status</th></tr></thead>
+                <tbody>
+                  ${emps.slice(0, 5).map(e => `
+                    <tr>
+                      <td>
+                        <div class="emp-cell">
+                          <div class="emp-avatar" style="background:${e.color}">${avImg(e)}</div>
+                          <div>
+                            <div class="emp-name">${e.name}</div>
+                            <div class="emp-email">${e.role}</div>
+                          </div>
+                        </div>
+                      </td>
+                      <td class="dept-tag">${e.dept}</td>
+                      <td>${statusBadge(e.status)}</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>`}
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header">
+              <h2>Pending Leave Requests</h2>
+              <a href="#" class="link" onclick="navigate('leave'); return false;">View all</a>
+            </div>
+            <div class="card-body" style="display:flex; flex-direction:column; justify-content:space-between">
+              <div>
+                ${pendingLeaves.length === 0 ? '<div class="empty-state" style="padding:2rem">No pending leave requests</div>' :
+                  pendingLeaves.slice(0, 4).map(l => {
+                    const emp = findEmployee(l.empId);
+                    return `
+                    <div class="leave-item">
+                      <div class="leave-info">
+                        <div class="emp-avatar" style="background:${emp?.color || '#64748b'}">${avImg(emp)}</div>
+                        <div>
+                          <div class="emp-name">${emp?.name || 'Unknown'}</div>
+                          <div class="leave-dates">${l.type} &bull; ${formatDate(l.from)} &mdash; ${formatDate(l.to)}</div>
+                        </div>
+                      </div>
+                      <div class="btn-group">
+                        <button class="btn btn-approve btn-sm" onclick="updateLeaveStatus('${l.id}','approved')">Approve</button>
+                        <button class="btn btn-reject btn-sm" onclick="updateLeaveStatus('${l.id}','rejected')">Reject</button>
+                      </div>
+                    </div>`;
+                  }).join('')}
+              </div>
+              <div style="margin-top:1rem; padding:0.75rem 1rem; background:#f8fafc; border-radius:8px; border:1px solid #e2e8f0; display:flex; justify-content:space-between; align-items:center; font-size:0.78rem; color:#64748b">
+                <span>Active pending queue: <strong>${pendingLeaves.length}</strong></span>
+                <a href="#" onclick="navigate('leave'); return false;" style="color:#2563eb; font-weight:600; text-decoration:none">Manage Leaves &rarr;</a>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-header">
+              <h2>Recent Activity</h2>
+              <span class="dept-tag" style="font-size:0.75rem">Live Logs</span>
+            </div>
+            <div class="card-body">
+              <ul class="activity-list">
+                ${activities.length === 0 ? '<li class="activity-item"><div class="activity-content"><div class="activity-text">No activity yet</div></div></li>' :
+                  activities.map(a => {
+                    const text = a.text || a.action || (a.user ? `${a.user}: Activity logged` : 'System activity');
+                    const time = timeAgo(a.time || a.createdAt || a.timestamp);
+                    const color = a.color || (a.type === 'success' ? 'green' : a.type === 'warning' ? 'amber' : a.type === 'danger' || a.type === 'error' ? 'red' : 'blue');
+                    return `
+                    <li class="activity-item">
+                      <div class="activity-dot ${color}"></div>
+                      <div class="activity-content">
+                        <div class="activity-text">${text}</div>
+                        <div class="activity-time">${time}</div>
+                      </div>
+                    </li>`;
+                  }).join('')}
+              </ul>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header">
+              <h2>Quick Actions</h2>
+              <span class="dept-tag" style="font-size:0.75rem">Shortcuts</span>
+            </div>
+            <div class="card-body">
+              <div class="quick-actions">
+                <button class="btn btn-primary" onclick="openAddEmpModal()" style="width:100%; justify-content:center">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
+                  <span>Add New Employee</span>
+                </button>
+                <button class="btn btn-secondary" onclick="openModal('leaveModal')" style="width:100%; justify-content:center">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75"/></svg>
+                  <span>Apply for Leave</span>
+                </button>
+                <button class="btn btn-secondary" onclick="navigate('attendance')" style="width:100%; justify-content:center">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                  <span>Mark Attendance</span>
+                </button>
+                <button class="btn btn-secondary" onclick="navigate('payroll')" style="width:100%; justify-content:center">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><rect width="20" height="14" x="2" y="5" rx="2"/><line x1="2" x2="22" y1="10" y2="10"/></svg>
+                  <span>Process Payroll</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+
+      return kpis + renderAttDash() + mainGrids;
     }
-    function renderDashboard() { return renderAttDash() + renderDashboardBase(); }
 
 
     // ========== SERVICE REGISTER (joining / leaving / rejoining + service calculation) ==========
@@ -4266,12 +5076,62 @@
     function setBioAll(on) { if (!isHR()) return; const m = {}; if (on) getEmployees().filter(e => e.status !== 'inactive').forEach(e => m[e.id] = true); save(STORAGE_KEYS.bioCfg, { ...getBioCfg(), emps: m }); showToast(on ? 'Fingerprint switched on for all employees' : 'Fingerprint switched off for all employees', 'success'); refreshCurrentPage(); }
     function setBioFallback(on) { if (!isHR()) return; save(STORAGE_KEYS.bioCfg, { ...getBioCfg(), photoFallback: on }); refreshCurrentPage(); }
     function resetBio(empId) { if (!isHR() || !confirm('Remove this employee\'s registered fingerprint devices? They will register again at the next check-in.')) return; const a = getBio(); delete a[empId]; save(STORAGE_KEYS.bio, a); refreshCurrentPage(); }
-    function renderBioCard() {
+        function renderBioCard() {
       const cfg = getBioCfg(), on = cfg.emps || {}, all = getBio(), emps = getEmployees().filter(e => e.status !== 'inactive'), n = emps.filter(e => on[e.id]).length;
-      return `<div class="card"><div class="card-header" style="flex-wrap:wrap;gap:.6rem"><h2>Fingerprint Attendance (mobile biometric)</h2><div class="btn-group"><button class="btn btn-approve" onclick="setBioAll(true)">Enable for all</button><button class="btn btn-secondary" onclick="setBioAll(false)">Disable for all</button></div></div><div class="card-body" style="padding:1.25rem">
-        <p class="dept-tag" style="margin-bottom:.8rem;line-height:1.6"><strong>${n} of ${emps.length}</strong> employees need a fingerprint. Switch it on only for the employees you choose; everyone else checks in normally (selfie + location). When on, the phone asks for the fingerprint (or face / screen lock) at Check In / Check Out; the first time, they register their phone. Works in the Android app, and in a mobile browser at <strong>https://hrms.rna-cs.com</strong> (not the IP address).</p>
-        <label style="display:flex;gap:.5rem;align-items:center;font-size:.85rem;margin-bottom:1rem"><input type="checkbox" ${cfg.photoFallback === false ? '' : 'checked'} onchange="setBioFallback(this.checked)" style="width:17px;height:17px" /> If fingerprint is not available on the phone or browser, take a photograph instead (recorded as "Selfie (fingerprint unavailable)")</label>
-        <div class="table-wrap">${emps.length ? `<table><thead><tr><th>Employee</th><th style="text-align:center">Fingerprint required</th><th>Registered devices</th><th></th></tr></thead><tbody>${emps.map(e => `<tr><td>${empCell(e)}</td><td style="text-align:center"><input type="checkbox" ${on[e.id] ? 'checked' : ''} onchange="setBioEmp('${e.id}',this.checked)" style="width:18px;height:18px;cursor:pointer" /></td><td>${(all[e.id] || []).length ? (all[e.id] || []).map(c => `<div class="dept-tag">${esc(c.name)} · ${formatDate((c.at || '').slice(0, 10))}</div>`).join('') : '<span class="dept-tag">Not registered</span>'}</td><td>${(all[e.id] || []).length ? `<button class="btn btn-delete" onclick="resetBio('${e.id}')">Reset</button>` : ''}</td></tr>`).join('')}</tbody></table>` : '<div class="empty-state">No employees</div>'}</div></div></div>`;
+      return `
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2>Mobile &amp; Hardware Biometrics</h2>
+              <div class="dept-tag" style="margin-top:2px">Configure WebAuthn hardware passkey and mobile fingerprint punch-ins</div>
+            </div>
+            <div class="btn-group">
+              <button class="btn btn-approve btn-sm" onclick="setBioAll(true)">Enable for All Employees</button>
+              <button class="btn btn-secondary btn-sm" onclick="setBioAll(false)">Disable for All</button>
+            </div>
+          </div>
+          <div class="card-body" style="padding:1.5rem">
+            <div class="callout-box info" style="margin-bottom:1.25rem">
+              <strong>${n} of ${emps.length}</strong> active employees have biometric requirements enforced. Employees register their device passkey / biometric lock during their first attendance punch.
+            </div>
+
+            <label style="display:flex; gap:0.6rem; align-items:center; font-size:0.84rem; font-weight:600; color:#334155; margin-bottom:1.25rem; cursor:pointer">
+              <input type="checkbox" ${cfg.photoFallback === false ? '' : 'checked'} onchange="setBioFallback(this.checked)" style="width:17px; height:17px" />
+              <span>Allow photo fallback if device biometric hardware is unavailable</span>
+            </label>
+
+            <div class="table-wrap">
+              ${emps.length ? `
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Employee</th>
+                      <th style="text-align:center">Biometric Enforced</th>
+                      <th>Registered Devices</th>
+                      <th style="text-align:right">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${emps.map(e => `
+                      <tr>
+                        <td>${empCell(e)}</td>
+                        <td style="text-align:center">
+                          <input type="checkbox" ${on[e.id] ? 'checked' : ''} onchange="setBioEmp('${e.id}', this.checked)" style="width:18px; height:18px; cursor:pointer" />
+                        </td>
+                        <td>
+                          ${(all[e.id] || []).length ? (all[e.id] || []).map(c => `<div class="dept-tag">${esc(c.name)} · ${formatDate((c.at || '').slice(0, 10))}</div>`).join('') : '<span class="dept-tag">Not registered yet</span>'}
+                        </td>
+                        <td style="text-align:right">
+                          ${(all[e.id] || []).length ? `<button class="btn btn-delete btn-sm" onclick="resetBio('${e.id}')">Reset Passkeys</button>` : ''}
+                        </td>
+                      </tr>
+                    `).join('')}
+                  </tbody>
+                </table>
+              ` : '<div class="empty-state">No active employees found.</div>'}
+            </div>
+          </div>
+        </div>`;
     }
 
 
@@ -4352,15 +5212,15 @@
       const x = v.last, sp = stintSvc(x, localISO()), years = sp.y + (sp.m >= 6 ? 1 : 0), basic = structure(getCTCs()[e.id] || 0).basic;
       if (!basic) return 'Set the annual CTC to estimate gratuity.';
       if (sp.y < 5) return `Gratuity: not yet payable (needs 5 years of continuous service; current period ${fmtS(sp)}).`;
-      return `Gratuity (estimate on last service period): ${inr(Math.min(2000000, Math.round(basic / 26 * 15 * years)))} = Basic ${inr(basic)} Ã· 26 Ã— 15 Ã— ${years} years.`;
+      return `Gratuity (estimate on last service period): ${inr(Math.min(2000000, Math.round(basic / 26 * 15 * years)))} = Basic ${inr(basic)} ÷ 26 × 15 × ${years} years.`;
     }
 
     // ========== STATUTORY MODULES (off by default; an admin activates / revokes with credentials) ==========
     const MODS = [
       ['bonus', 'Statutory Bonus', 'Annual bonus for employees whose monthly wages are up to ₹21,000: 8.33% to 20% of wages, wage ceiling ₹7,000 or the minimum wage if higher.'],
-      ['ot', 'Overtime at double rate', 'Overtime hours paid at twice the normal hourly rate of wages (Basic Ã· 30 Ã· daily hours Ã— 2) and added to that month\'s pay.'],
+      ['ot', 'Overtime at double rate', 'Overtime hours paid at twice the normal hourly rate of wages (Basic ÷ 30 ÷ daily hours × 2) and added to that month\'s pay.'],
       ['minwage', 'Minimum-wage check', 'Flags employees paid below the Telangana minimum wage that you enter from the Labour Department notification.'],
-      ['encash', 'Leave encashment', 'Pays accrued leave in cash at Basic Ã· 30 per day, added to a chosen payroll month.'],
+      ['encash', 'Leave encashment', 'Pays accrued leave in cash at Basic ÷ 30 per day, added to a chosen payroll month.'],
       ['fnf', 'Full & Final settlement', 'Exit statement: leave encashment, gratuity (5 years), notice recovery, other dues and TDS.'],
       ['arrears', 'Salary arrears', 'Back-dated pay revision: the pay difference for already-processed months, with PF / ESI on the difference and TDS on the lump sum, paid in a chosen month.'],
       ['f12bb', 'Form 124 (earlier 12BB) and old-regime TDS', 'Employees declare rent, landlord, investments and loan interest. Once HR approves, TDS follows the old regime for that employee.'],
@@ -4466,7 +5326,7 @@
     function otPanel() {
       const emps = getEmployees().filter(e => e.status !== 'inactive'), list = getOT().filter(o => o.date.startsWith(modMonth)).sort((a, b) => b.date.localeCompare(a.date));
       const body = `<div style="display:flex;gap:.6rem;flex-wrap:wrap;align-items:center;margin-bottom:.8rem"><input type="month" value="${modMonth}" onchange="setModMonth(this.value)" style="${mi}" /><select id="otEmp" style="${mi}">${empOpts(emps)}</select><input type="date" id="otDate" value="${localISO()}" style="${mi}" /><input type="number" id="otHrs" min="0.5" max="12" step="0.5" value="1" style="${mi};width:80px" /><span class="dept-tag">hours</span><button class="btn btn-primary" onclick="addOT()">Add overtime</button></div>
-        <div class="dept-tag" style="line-height:1.6;margin-bottom:.6rem">Rate = Basic Ã· 30 Ã· ${(officeCfg().dailyMin / 60).toFixed(2)} daily hours Ã— 2. Entries in the selected month are paid in that month's payroll.</div>
+        <div class="dept-tag" style="line-height:1.6;margin-bottom:.6rem">Rate = Basic ÷ 30 ÷ ${(officeCfg().dailyMin / 60).toFixed(2)} daily hours × 2. Entries in the selected month are paid in that month's payroll.</div>
         ${list.length ? `<div class="table-wrap"><table><thead><tr><th>Employee</th><th>Date</th><th>Hours</th><th>Rate / hr</th><th>Amount</th><th></th></tr></thead><tbody>${list.map(o => { const b = basicOf(o.empId), rt = otRate(b); return `<tr><td>${empCell(findEmployee(o.empId))}</td><td class="dept-tag">${formatDate(o.date)}</td><td>${o.hours}</td><td>${inr(rt)}</td><td>${inr(o.hours * rt)}</td><td><button class="btn btn-delete" onclick="delOT('${o.id}')">Delete</button></td></tr>`; }).join('')}</tbody></table></div>` : '<div class="empty-state">No overtime recorded for this month.</div>'}`;
       return pcard('Overtime (double rate)', body);
     }
@@ -4493,7 +5353,7 @@
     function encashPanel() {
       const emps = getEmployees().filter(e => e.status !== 'inactive'), list = getPayouts().filter(p => p.kind === 'encash').slice(0, 30);
       const body = `<div style="display:flex;gap:.6rem;flex-wrap:wrap;align-items:center;margin-bottom:.8rem"><select id="enEmp" style="${mi}">${empOpts(emps)}</select><input type="number" id="enDays" min="0.5" step="0.5" value="1" style="${mi};width:80px" /><span class="dept-tag">days, pay in</span><input type="month" id="enMonth" value="${modMonth}" style="${mi}" /><button class="btn btn-primary" onclick="addEncash()">Add encashment</button></div>
-        <div class="dept-tag" style="line-height:1.6;margin-bottom:.6rem">Amount = Basic Ã· 30 Ã— days. Check the leave balance in your leave policy before adding.</div>
+        <div class="dept-tag" style="line-height:1.6;margin-bottom:.6rem">Amount = Basic ÷ 30 × days. Check the leave balance in your leave policy before adding.</div>
         ${list.length ? `<div class="table-wrap"><table><thead><tr><th>Employee</th><th>Pay month</th><th>Days</th><th>Amount</th><th></th></tr></thead><tbody>${list.map(p => `<tr><td>${empCell(findEmployee(p.empId))}</td><td>${monthLabel(p.month)}</td><td>${p.days}</td><td>${inr(p.amount)}</td><td><button class="btn btn-delete" onclick="delPayout('${p.id}')">Delete</button></td></tr>`).join('')}</tbody></table></div>` : '<div class="empty-state">No leave encashment recorded.</div>'}`;
       return pcard('Leave encashment', body);
     }

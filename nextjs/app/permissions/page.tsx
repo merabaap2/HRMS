@@ -16,23 +16,29 @@ export default function PermissionsPage() {
   const [type, setType] = useState<'permission' | 'od'>('permission');
   const [hours, setHours] = useState('2');
   const [reason, setReason] = useState('');
+  const [permQuota, setPermQuota] = useState(4);
   const [loading, setLoading] = useState(true);
 
   const loadData = async () => {
     try {
       setLoading(true);
-      const [empRes, permRes] = await Promise.all([
+      const [empRes, permRes, setRes] = await Promise.all([
         fetch('/api/employees'),
-        fetch('/api/permissions')
+        fetch('/api/permissions'),
+        fetch('/api/settings')
       ]);
 
-      const [empData, permData] = await Promise.all([
+      const [empData, permData, setData] = await Promise.all([
         empRes.ok ? empRes.json() : [],
-        permRes.ok ? permRes.json() : []
+        permRes.ok ? permRes.json() : [],
+        setRes.ok ? setRes.json() : null
       ]);
 
       setEmployees(Array.isArray(empData) ? empData : []);
       setPermissions(Array.isArray(permData) ? permData : []);
+      if (setData?.permPolicy?.quota) {
+        setPermQuota(Number(setData.permPolicy.quota));
+      }
     } catch {
     } finally {
       setLoading(false);
@@ -112,7 +118,7 @@ export default function PermissionsPage() {
             </span>
           ) : (
             <span style={{ fontSize: '0.85rem', color: '#64748b' }}>
-              Monthly Policy: <strong>Maximum 4 hours permission per employee / month</strong>
+              Monthly Policy: <strong>Maximum {permQuota} hours permission per employee / month</strong>
             </span>
           )}
         </div>
@@ -128,14 +134,14 @@ export default function PermissionsPage() {
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
             <span style={{ fontSize: '0.82rem', fontWeight: 600, color: '#64748b' }}>MONTHLY PERMISSION QUOTA</span>
             <span style={{ fontSize: '0.85rem', fontWeight: 700, color: '#2563eb' }}>
-              {isEmployee ? `${myApprovedHours} / 4 Hours` : '4 Hours / Employee'}
+              {isEmployee ? `${myApprovedHours} / ${permQuota} Hours` : `${permQuota} Hours / Employee`}
             </span>
           </div>
           <div className="kpi-progress">
-            <div className="kpi-progress-bar" style={{ width: `${(myApprovedHours / 4) * 100}%`, background: '#2563eb' }} />
+            <div className="kpi-progress-bar" style={{ width: `${Math.min(100, (myApprovedHours / permQuota) * 100)}%`, background: '#2563eb' }} />
           </div>
           <div style={{ fontSize: '0.75rem', color: '#64748b', marginTop: '0.5rem' }}>
-            {isEmployee ? `${Math.max(0, 4 - myApprovedHours)} hours balance available` : 'Permitted for personal doctor, banking or family work'}
+            {isEmployee ? `${Math.max(0, permQuota - myApprovedHours)} hours balance available` : 'Permitted for personal doctor, banking or family work'}
           </div>
         </div>
 
@@ -308,7 +314,7 @@ export default function PermissionsPage() {
                       value={type}
                       onChange={(e: any) => setType(e.target.value)}
                     >
-                      <option value="permission">Personal Permission (Max 4h/mo)</option>
+                      <option value="permission">Personal Permission (Max {permQuota}h/mo)</option>
                       <option value="od">Outdoor Duty (Client / Official Visit)</option>
                     </select>
                   </div>

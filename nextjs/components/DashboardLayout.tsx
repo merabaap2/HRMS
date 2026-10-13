@@ -4,6 +4,7 @@ import { useState } from 'react';
 import Sidebar from './Sidebar';
 import Navbar from './Navbar';
 import FaceAttendanceModal from './FaceAttendanceModal';
+import GreetingPopupModal from './GreetingPopupModal';
 
 interface DashboardLayoutProps {
   title?: string;
@@ -52,6 +53,8 @@ export default function DashboardLayout({
         onClose={() => setFaceModalOpen(false)}
         onSuccess={handleFaceSuccess}
       />
+
+      <GreetingPopupModal />
     </div>
   );
 }

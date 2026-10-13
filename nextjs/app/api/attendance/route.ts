@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAttendance, saveAttendance, getEmployees, addActivity } from '@/lib/db';
+import { getAttendance, saveAttendance, getEmployees, addActivity, readRawState, writeRawState } from '@/lib/db';
 import { getSessionFromRequest } from '@/lib/auth';
 import { AttendanceRecord } from '@/types';
 
@@ -109,12 +109,24 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Employee not found' }, { status: 404 });
     }
 
-    // 1. GEOFENCE LOCATION VERIFICATION
+    // 1. LOAD SYSTEM SETTINGS CONFIGURATION
+    const state = readRawState();
+    let officeCfg = { open: '09:30', close: '18:30', grace: 15 };
+    let geofenceCfg = { lat: DEFAULT_OFFICE_LAT, lng: DEFAULT_OFFICE_LNG, radius: DEFAULT_GEOFENCE_RADIUS_METERS };
+    let faceCfg = { mode: 'off', threshold: 0.5 };
+
+    try {
+      if (state['hrms_office']) officeCfg = JSON.parse(state['hrms_office']);
+      if (state['hrms_geofence']) geofenceCfg = JSON.parse(state['hrms_geofence']);
+      if (state['hrms_face_cfg']) faceCfg = JSON.parse(state['hrms_face_cfg']);
+    } catch {}
+
+    // 2. GEOFENCE LOCATION VERIFICATION
     let distanceMeters: number | undefined = undefined;
     if (latitude !== undefined && longitude !== undefined) {
-      const officeLat = employee.assignedOfficeLat || DEFAULT_OFFICE_LAT;
-      const officeLng = employee.assignedOfficeLng || DEFAULT_OFFICE_LNG;
-      const maxRadius = employee.geofenceRadiusMeters || DEFAULT_GEOFENCE_RADIUS_METERS;
+      const officeLat = employee.assignedOfficeLat || geofenceCfg.lat || DEFAULT_OFFICE_LAT;
+      const officeLng = employee.assignedOfficeLng || geofenceCfg.lng || DEFAULT_OFFICE_LNG;
+      const maxRadius = employee.geofenceRadiusMeters || geofenceCfg.radius || DEFAULT_GEOFENCE_RADIUS_METERS;
 
       distanceMeters = calculateDistanceMeters(latitude, longitude, officeLat, officeLng);
 
@@ -127,11 +139,12 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 2. BIOMETRIC FACIAL MATCH VERIFICATION
+    // 3. BIOMETRIC FACIAL MATCH VERIFICATION
     if (method === 'face' && faceMatchScore !== undefined) {
-      if (faceMatchScore < 85) {
+      const thresholdPct = (faceCfg.threshold || 0.5) * 100;
+      if (faceCfg.mode === 'block' && faceMatchScore < thresholdPct) {
         return NextResponse.json({
-          error: `Biometric Mismatch: Facial recognition confidence (${faceMatchScore.toFixed(1)}%) is below the required 85% threshold. Does not match ${employee.name}'s enrolled profile.`,
+          error: `Face Verification Blocked: Facial match score (${faceMatchScore.toFixed(1)}%) is below the configured strictness threshold (${thresholdPct}%). Check-in refused.`,
           faceMatchScore
         }, { status: 400 });
       }
@@ -143,6 +156,29 @@ export async function POST(req: NextRequest) {
     const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
 
     let record = attendance.find(a => a.empId === employee.id && a.date === today);
+
+    // Append selfie to hrms_selfies audit log if photo is provided
+    if (photo) {
+      try {
+        const rawSelfies = state['hrms_selfies'] ? JSON.parse(state['hrms_selfies']) : [];
+        const newSelfie = {
+          id: `sf-${Date.now()}`,
+          empId: employee.id,
+          name: employee.name,
+          date: today,
+          type: record ? 'Check Out' : 'Check In',
+          time: timeStr,
+          distance: distanceMeters !== undefined ? `${distanceMeters} m` : 'on geofence',
+          face: faceMatchScore ? `Match (${faceMatchScore.toFixed(0)}%)` : 'Match',
+          photo
+        };
+        rawSelfies.unshift(newSelfie);
+        state['hrms_selfies'] = JSON.stringify(rawSelfies.slice(0, 50));
+        writeRawState(state);
+      } catch (err) {
+        console.error('Failed to update selfie audit history:', err);
+      }
+    }
 
     if (record) {
       // Clock Out
@@ -166,8 +202,13 @@ export async function POST(req: NextRequest) {
 
       return NextResponse.json({ success: true, action: 'clock_out', record });
     } else {
-      // Clock In
-      const isLate = now.getHours() > 9 || (now.getHours() === 9 && now.getMinutes() > 30);
+      // Clock In - evaluate against configured office opening time + grace period
+      const [openH, openM] = (officeCfg.open || '09:30').split(':').map(Number);
+      const openTotalMinutes = (openH || 9) * 60 + (openM || 30);
+      const graceMinutes = Number(officeCfg.grace) || 15;
+      const nowTotalMinutes = now.getHours() * 60 + now.getMinutes();
+      const isLate = nowTotalMinutes > (openTotalMinutes + graceMinutes);
+
       const newRecord: AttendanceRecord = {
         id: `att_${employee.id}_${today}`,
         empId: employee.id,

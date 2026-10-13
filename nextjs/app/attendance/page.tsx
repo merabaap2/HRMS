@@ -10,7 +10,8 @@ import { Employee, AttendanceRecord } from '@/types';
 export default function AttendancePage() {
   const { user: currentUser, employee: currentEmp, isEmployee } = useAuth();
 
-  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
+  const [selectedDate, setSelectedDate] = useState('2026-10-09');
+  const [todayWorkdayStr, setTodayWorkdayStr] = useState('');
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [records, setRecords] = useState<AttendanceRecord[]>([]);
   const [myFullHistory, setMyFullHistory] = useState<AttendanceRecord[]>([]);
@@ -49,6 +50,14 @@ export default function AttendancePage() {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    try {
+      const today = new Date().toISOString().split('T')[0];
+      setSelectedDate(today);
+      setTodayWorkdayStr(new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric', year: 'numeric' }));
+    } catch {}
+  }, []);
 
   useEffect(() => {
     loadData();
@@ -101,7 +110,7 @@ export default function AttendancePage() {
               <div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.35rem' }}>
                   <span style={{ fontSize: '0.8rem', color: '#93c5fd', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                    TODAY'S WORKDAY · {new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric', year: 'numeric' })}
+                    TODAY&apos;S WORKDAY {todayWorkdayStr ? `· ${todayWorkdayStr}` : ''}
                   </span>
                 </div>
                 <div style={{ fontSize: '1.5rem', fontWeight: 800, color: '#ffffff', marginBottom: '0.25rem' }}>

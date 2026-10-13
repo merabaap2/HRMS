@@ -7,6 +7,7 @@ const fs = require('fs');
 const path = require('path');
 const config = require('./config');
 const { handleStateRoutes } = require('./routes/state.routes');
+const { handleEntityRoutes } = require('./routes/api.routes');
 
 function createAppHandler() {
   return (req, res) => {
@@ -30,6 +31,10 @@ function createAppHandler() {
       }
 
       if (handleStateRoutes(req, res, rawUrl)) {
+        return;
+      }
+
+      if (handleEntityRoutes(req, res, rawUrl)) {
         return;
       }
 
@@ -73,7 +78,12 @@ function createAppHandler() {
       const clientFilePath = path.join(config.ROOT_DIR, rawUrl);
       if (fs.existsSync(clientFilePath) && fs.statSync(clientFilePath).isFile()) {
         const ext = path.extname(clientFilePath);
-        res.writeHead(200, { 'Content-Type': config.MIME_TYPES[ext] || 'text/plain' });
+        res.writeHead(200, {
+          'Content-Type': config.MIME_TYPES[ext] || 'text/plain',
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+          'Pragma': 'no-cache',
+          'Expires': '0'
+        });
         return fs.createReadStream(clientFilePath).pipe(res);
       }
     }
@@ -86,7 +96,12 @@ function createAppHandler() {
           res.writeHead(404, { 'Content-Type': 'text/plain' });
           return res.end('index.html not found');
         }
-        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.writeHead(200, {
+          'Content-Type': 'text/html; charset=utf-8',
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+          'Pragma': 'no-cache',
+          'Expires': '0'
+        });
         res.end(content);
       });
     }

@@ -93,8 +93,13 @@ export default function DashboardPage() {
     }
   };
 
+  const [todayFormatted, setTodayFormatted] = useState('');
+
   useEffect(() => {
     loadData();
+    try {
+      setTodayFormatted(new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }));
+    } catch {}
   }, []);
 
   // Compute KPI summary for Admin
@@ -110,10 +115,12 @@ export default function DashboardPage() {
   const myLeavesPending = leaves.filter(l => l.status === 'pending');
 
   const filteredRoster = employees.filter(emp => {
-    const matchSearch = emp.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                        emp.empCode.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                        emp.dept.toLowerCase().includes(searchTerm.toLowerCase());
+    const name = (emp?.name || '').toLowerCase();
+    const code = (emp?.empCode || '').toLowerCase();
+    const dept = (emp?.dept || '').toLowerCase();
+    const term = (searchTerm || '').toLowerCase();
 
+    const matchSearch = name.includes(term) || code.includes(term) || dept.includes(term);
     if (!matchSearch) return false;
 
     const record = attendance.find(a => a.empId === emp.id);
@@ -523,7 +530,7 @@ export default function DashboardPage() {
             <div className="card-header">
               <div className="card-header-left">
                 <h2 className="card-title">Today's Live Attendance Roster</h2>
-                <span className="card-subtitle">Showing live check-ins for {new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}</span>
+                <span className="card-subtitle">Showing live check-ins for {todayFormatted || 'Today'}</span>
               </div>
 
               <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>

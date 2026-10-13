@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getPermissions, savePermissions, getEmployees, addActivity } from '@/lib/db';
+import { getPermissions, savePermissions, getEmployees, addActivity, readRawState } from '@/lib/db';
 import { getSessionFromRequest } from '@/lib/auth';
 import { PermissionRecord } from '@/types';
 
@@ -42,19 +42,47 @@ export async function POST(req: NextRequest) {
     const employees = getEmployees();
     const emp = employees.find(e => e.id === targetEmpId);
 
+    const permType = data.type || 'permission';
+    const hours = Number(data.hours) || 1;
+    const permDate = data.date || new Date().toISOString().split('T')[0];
+
+    // Read configured permission quota from settings
+    const rawState = readRawState();
+    let permQuota = 4;
+    try {
+      if (rawState['hrms_perm_policy']) {
+        const parsed = JSON.parse(rawState['hrms_perm_policy']);
+        if (parsed.quota) permQuota = Number(parsed.quota);
+      }
+    } catch {}
+
+    const permissions = getPermissions();
+
+    if (permType === 'permission') {
+      const currentMonth = permDate.slice(0, 7);
+      const usedHours = permissions
+        .filter(p => p.empId === targetEmpId && p.type === 'permission' && (p.date || '').startsWith(currentMonth) && p.status !== 'rejected')
+        .reduce((sum, p) => sum + p.hours, 0);
+
+      if (usedHours + hours > permQuota) {
+        return NextResponse.json({
+          error: `Monthly quota exceeded. You have already used or requested ${usedHours}h of your ${permQuota}h monthly quota.`
+        }, { status: 400 });
+      }
+    }
+
     const newPerm: PermissionRecord = {
       id: `perm_${Date.now()}`,
       empId: targetEmpId,
-      type: data.type || 'permission',
-      hours: Number(data.hours) || 1,
+      type: permType,
+      hours: hours,
       fromTime: data.fromTime || '14:00',
       toTime: data.toTime || '15:00',
       reason: data.reason || 'Personal requisition',
       status: 'pending',
-      date: data.date || new Date().toISOString().split('T')[0]
+      date: permDate
     };
 
-    const permissions = getPermissions();
     permissions.unshift(newPerm);
     savePermissions(permissions);
 

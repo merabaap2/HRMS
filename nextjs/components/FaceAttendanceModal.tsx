@@ -49,6 +49,17 @@ export default function FaceAttendanceModal({ isOpen, onClose, onSuccess }: Face
   const [distanceToOffice, setDistanceToOffice] = useState<number | null>(45);
   const [bypassGeofence, setBypassGeofence] = useState(true); // Default to true in development/demo so user can test anywhere
 
+  // Configured System Geofence & Face AI settings from persistent Settings module
+  const [configuredGeofence, setConfiguredGeofence] = useState({
+    lat: OFFICE_COORDS.lat,
+    lng: OFFICE_COORDS.lng,
+    radius: OFFICE_COORDS.radiusMeters
+  });
+  const [configuredFaceCfg, setConfiguredFaceCfg] = useState<{ mode: string; threshold: number }>({
+    mode: 'off',
+    threshold: 0.5
+  });
+
   const [feedback, setFeedback] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -161,8 +172,30 @@ export default function FaceAttendanceModal({ isOpen, onClose, onSuccess }: Face
         })
         .catch(() => {});
 
-      // 3. Request live Geolocation
-      requestUserLocation();
+      // 3. Fetch Settings (Office Geofence & Face AI Policy)
+      fetch('/api/settings')
+        .then(res => res.ok ? res.json() : null)
+        .then(setObj => {
+          let g = configuredGeofence;
+          if (setObj?.geofence?.lat && setObj?.geofence?.lng) {
+            g = {
+              lat: Number(setObj.geofence.lat) || OFFICE_COORDS.lat,
+              lng: Number(setObj.geofence.lng) || OFFICE_COORDS.lng,
+              radius: Number(setObj.geofence.radius) || OFFICE_COORDS.radiusMeters
+            };
+            setConfiguredGeofence(g);
+          }
+          if (setObj?.faceCfg) {
+            setConfiguredFaceCfg({
+              mode: setObj.faceCfg.mode || 'off',
+              threshold: Number(setObj.faceCfg.threshold) || 0.5
+            });
+          }
+          requestUserLocation(g);
+        })
+        .catch(() => {
+          requestUserLocation();
+        });
 
       // 4. Try starting webcam
       startCamera();
@@ -189,7 +222,8 @@ export default function FaceAttendanceModal({ isOpen, onClose, onSuccess }: Face
     }
   }, [employees, currentUser]);
 
-  const requestUserLocation = () => {
+  const requestUserLocation = (overrideGeo?: typeof configuredGeofence) => {
+    const geo = overrideGeo || configuredGeofence;
     setLocationStatus('pending');
     if (typeof navigator !== 'undefined' && 'geolocation' in navigator) {
       navigator.geolocation.getCurrentPosition(
@@ -198,25 +232,25 @@ export default function FaceAttendanceModal({ isOpen, onClose, onSuccess }: Face
           const lng = pos.coords.longitude;
           setCurrentCoords({ lat, lng });
 
-          const dist = calculateDistance(lat, lng, OFFICE_COORDS.lat, OFFICE_COORDS.lng);
+          const dist = calculateDistance(lat, lng, geo.lat, geo.lng);
           setDistanceToOffice(dist);
 
-          if (dist <= OFFICE_COORDS.radiusMeters) {
+          if (dist <= geo.radius) {
             setLocationStatus('verified');
           } else {
             setLocationStatus('outside');
           }
         },
         () => {
-          // Fallback simulation for sandbox / desktop browser with mock on-site coords
-          setCurrentCoords({ lat: OFFICE_COORDS.lat + 0.0003, lng: OFFICE_COORDS.lng + 0.0002 });
-          setDistanceToOffice(42);
+          // Fallback simulation for desktop browser with mock on-site coords
+          setCurrentCoords({ lat: geo.lat + 0.0002, lng: geo.lng + 0.0001 });
+          setDistanceToOffice(28);
           setLocationStatus('verified');
         },
         { enableHighAccuracy: true, timeout: 8000 }
       );
     } else {
-      setDistanceToOffice(35);
+      setDistanceToOffice(25);
       setLocationStatus('verified');
     }
   };
@@ -252,7 +286,16 @@ export default function FaceAttendanceModal({ isOpen, onClose, onSuccess }: Face
     // Check Geofence
     if (locationStatus === 'outside' && !bypassGeofence) {
       setFeedback({
-        message: `Location Error: You are ${distanceToOffice}m away from ${OFFICE_COORDS.name} (Allowed: within ${OFFICE_COORDS.radiusMeters}m). Attendance requires on-site presence or checking "Demo mode".`,
+        message: `Location Error: You are ${distanceToOffice}m away from Office HQ (Allowed: within ${configuredGeofence.radius}m). Attendance requires on-site presence or checking "Demo mode".`,
+        type: 'error'
+      });
+      return;
+    }
+
+    // Check Face AI Security Policy
+    if (configuredFaceCfg?.mode === 'block' && matchScore < Math.round((configuredFaceCfg.threshold || 0.75) * 100)) {
+      setFeedback({
+        message: `Face AI Security Block: Facial match confidence (${matchScore}%) is below the configured security threshold (${Math.round((configuredFaceCfg.threshold || 0.75) * 100)}%). Verification rejected by company biometric policy.`,
         type: 'error'
       });
       return;
@@ -280,10 +323,11 @@ export default function FaceAttendanceModal({ isOpen, onClose, onSuccess }: Face
         body: JSON.stringify({
           empId: targetEmployee.id,
           method: 'face',
-          latitude: currentCoords?.lat || OFFICE_COORDS.lat,
-          longitude: currentCoords?.lng || OFFICE_COORDS.lng,
+          latitude: currentCoords?.lat || configuredGeofence.lat,
+          longitude: currentCoords?.lng || configuredGeofence.lng,
           faceMatchScore: matchScore,
           bypassGeofence: bypassGeofence,
+          photo: liveShot || undefined,
           notes: `Dual-Factor Verified: Facial Match (${matchScore}%) + GPS Geofence (${distanceToOffice || 40}m from HQ)${cameraActive ? ' [Live Webcam Stream]' : ' [Simulated Camera]'}`
         })
       });
