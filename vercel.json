@@ -3,6 +3,7 @@
   "services": {
     "app": {
       "root": ".",
+      "framework": "node",
       "runtime": "node",
       "entrypoint": "server.js"
     },
