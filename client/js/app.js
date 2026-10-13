@@ -2792,6 +2792,7 @@
     function logout(reason) {
       try { sessionStorage.removeItem('hrms_session'); sessionStorage.removeItem('hrms_last_active'); } catch {}
       session = null;
+      document.body.classList.add('in-login');
       ['idleWarn', 'popupShow', 'attDone'].forEach(id => document.getElementById(id)?.remove());
       document.querySelectorAll('.modal-backdrop.show').forEach(m => m.classList.remove('show'));
       try { selfieStop(); } catch {}
@@ -2806,6 +2807,7 @@
     function applyRole() {
       const hr = isHR();
       const emp = hr ? null : findEmployee(session.empId);
+      document.body.classList.remove('in-login');
       document.getElementById('userAvatar').innerHTML = hr ? (session?.user === 'hradmin' ? 'HA' : 'AD') : avImg(emp);
       document.getElementById('userName').textContent = hr ? (HR_USERS.find(x => x.user === session?.user)?.name || 'Admin User') : (emp?.name || 'Employee');
       document.getElementById('userRole').textContent = hr ? 'HR Administrator' : (emp?.role || 'Employee');
@@ -6094,4 +6096,8 @@
       document.querySelectorAll('img[data-logo]').forEach(i => i.src = _logoImg.src);
     }
     if (session) applyRole();
-    else { document.getElementById('loginScreen')?.classList.add('show'); showLastLogin(); }
+    else {
+      document.body.classList.add('in-login');
+      document.getElementById('loginScreen')?.classList.add('show');
+      showLastLogin();
+    }

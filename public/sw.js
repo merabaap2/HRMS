@@ -1,5 +1,5 @@
-// Service Worker for HRMS PWA (Cache Buster v2.7.0)
-const CACHE_NAME = 'hrms-cache-v2.7.0';
+// Service Worker for HRMS PWA (Cache Buster v2.8.0)
+const CACHE_NAME = 'hrms-cache-v2.8.0';
 
 self.addEventListener('install', event => {
   self.skipWaiting();
