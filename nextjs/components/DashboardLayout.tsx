@@ -32,6 +32,22 @@ export default function DashboardLayout({
     }
   }, [isLoading, user, router]);
 
+  // Prevent background scrolling when mobile sidebar drawer is open
+  useEffect(() => {
+    if (typeof document !== 'undefined') {
+      if (mobileOpen) {
+        document.body.style.overflow = 'hidden';
+      } else {
+        document.body.style.overflow = '';
+      }
+    }
+    return () => {
+      if (typeof document !== 'undefined') {
+        document.body.style.overflow = '';
+      }
+    };
+  }, [mobileOpen]);
+
   const handleFaceSuccess = () => {
     if (onRefreshData) {
       onRefreshData();
@@ -49,7 +65,7 @@ export default function DashboardLayout({
         <Navbar
           title={title}
           subtitle={subtitle}
-          onOpenMobileMenu={() => setMobileOpen(true)}
+          onOpenMobileMenu={() => setMobileOpen(prev => !prev)}
           onOpenFaceModal={() => setFaceModalOpen(true)}
         />
 

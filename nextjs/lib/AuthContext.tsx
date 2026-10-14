@@ -24,8 +24,30 @@ const AuthContext = createContext<AuthContextType>({
 });
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<UserSession | null>(null);
-  const [employee, setEmployee] = useState<Employee | null>(null);
+  const [user, setUser] = useState<UserSession | null>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const cached = sessionStorage.getItem('hrms_session_user');
+        return cached ? JSON.parse(cached) : null;
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  });
+
+  const [employee, setEmployee] = useState<Employee | null>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const cached = sessionStorage.getItem('hrms_session_emp');
+        return cached ? JSON.parse(cached) : null;
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  });
+
   const [isLoading, setIsLoading] = useState(true);
 
   const fetchSession = async () => {
@@ -50,6 +72,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             sessionStorage.removeItem('hrms_session_user');
             sessionStorage.removeItem('hrms_session_emp');
           }
+        }
+      } else {
+        setUser(null);
+        setEmployee(null);
+        if (typeof window !== 'undefined') {
+          sessionStorage.removeItem('hrms_session_user');
+          sessionStorage.removeItem('hrms_session_emp');
         }
       }
     } catch {

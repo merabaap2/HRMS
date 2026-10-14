@@ -30,6 +30,16 @@ export default function Sidebar({ mobileOpen = false, onCloseMobile }: SidebarPr
     }).catch(() => {});
   }, []);
 
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && mobileOpen && onCloseMobile) {
+        onCloseMobile();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [mobileOpen, onCloseMobile]);
+
   const handleLogout = async () => {
     await logout();
   };
@@ -40,10 +50,11 @@ export default function Sidebar({ mobileOpen = false, onCloseMobile }: SidebarPr
         <div
           className="sidebar-overlay"
           onClick={onCloseMobile}
+          aria-hidden="true"
         />
       )}
 
-      <aside className={`app-sidebar ${mobileOpen ? 'open' : ''}`}>
+      <aside className={`app-sidebar ${mobileOpen ? 'open mobile-open' : ''}`}>
         <div className="sidebar-header">
           <Link href="/" className="sidebar-brand-link" onClick={onCloseMobile}>
             <div className="brand-logo-icon">
@@ -274,24 +285,24 @@ export default function Sidebar({ mobileOpen = false, onCloseMobile }: SidebarPr
         </nav>
 
         <div className="sidebar-footer">
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flex: 1, minWidth: 0 }}>
+          <div className="sidebar-user-card">
             {isEmployee ? (
               <Avatar
                 avatar={employee?.avatar}
                 name={user?.name || 'Employee'}
                 color={employee?.color || '#2563eb'}
-                size={36}
+                size={38}
               />
             ) : (
-              <div className="user-avatar" style={{ background: 'linear-gradient(135deg, #a855f7 0%, #6366f1 100%)' }}>
+              <div className="user-avatar" style={{ background: 'linear-gradient(135deg, #a855f7 0%, #6366f1 100%)', width: '38px', height: '38px' }}>
                 {user?.name ? user.name.slice(0, 2).toUpperCase() : 'AD'}
               </div>
             )}
-            <div className="user-meta" style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
-              <div className="user-meta-name" style={{ whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden' }}>
+            <div className="user-meta">
+              <div className="user-meta-name">
                 {user?.name || 'Admin User'}
               </div>
-              <div className="user-meta-role" style={{ whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden' }}>
+              <div className="user-meta-role">
                 {isEmployee ? (
                   `${employee?.empCode || user?.username || 'Staff'} · ${employee?.role || user?.dept || 'Staff'}`
                 ) : (
@@ -300,17 +311,19 @@ export default function Sidebar({ mobileOpen = false, onCloseMobile }: SidebarPr
               </div>
             </div>
           </div>
+
           <button
-            className="btn-logout"
+            className="sidebar-signout-action-btn"
             onClick={handleLogout}
             title="Sign out of HRMS"
-            aria-label="Logout"
+            aria-label="Sign out"
           >
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
               <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
               <polyline points="16 17 21 12 16 7" />
               <line x1="21" x2="9" y1="12" y2="12" />
             </svg>
+            <span>Sign Out</span>
           </button>
         </div>
       </aside>

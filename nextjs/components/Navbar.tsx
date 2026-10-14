@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { useAuth } from '@/lib/AuthContext';
 
 interface NavbarProps {
   title?: string;
@@ -15,6 +16,7 @@ export default function Navbar({
   onOpenMobileMenu,
   onOpenFaceModal
 }: NavbarProps) {
+  const { user, isEmployee, logout } = useAuth();
   const [currentDateStr, setCurrentDateStr] = useState('');
 
   useEffect(() => {
@@ -27,15 +29,20 @@ export default function Navbar({
     }));
   }, []);
 
+  const handleLogout = async () => {
+    await logout();
+  };
+
   return (
     <header className="app-topbar">
       <div className="topbar-left">
         <button
           className="menu-toggle-btn"
           onClick={onOpenMobileMenu}
-          aria-label="Toggle menu"
+          aria-label="Toggle navigation menu"
+          title="Open Menu"
         >
-          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
             <line x1="3" x2="21" y1="6" y2="6" />
             <line x1="3" x2="21" y1="12" y2="12" />
             <line x1="3" x2="21" y1="18" y2="18" />
@@ -68,6 +75,7 @@ export default function Navbar({
             className="btn btn-primary topbar-punch-btn"
             onClick={onOpenFaceModal}
             title="Biometric Punch Attendance"
+            aria-label="Biometric Punch"
           >
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z" />
@@ -76,6 +84,21 @@ export default function Navbar({
             <span className="topbar-punch-text">Biometric Punch</span>
           </button>
         )}
+
+        {/* Quick Direct Sign Out Button */}
+        <button
+          className="btn-topbar-logout"
+          onClick={handleLogout}
+          title="Sign out of HRMS"
+          aria-label="Sign out"
+        >
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+            <polyline points="16 17 21 12 16 7" />
+            <line x1="21" x2="9" y1="12" y2="12" />
+          </svg>
+          <span className="topbar-logout-text">Sign Out</span>
+        </button>
       </div>
     </header>
   );

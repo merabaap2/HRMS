@@ -6,7 +6,7 @@ import { useAuth } from '@/lib/AuthContext';
 
 export default function LoginPage() {
   const router = useRouter();
-  const { user, isLoading } = useAuth();
+  const { user, isLoading, refreshAuth } = useAuth();
   const [username, setUsername] = useState('admin');
   const [password, setPassword] = useState('admin123');
   const [showPassword, setShowPassword] = useState(false);
@@ -15,9 +15,9 @@ export default function LoginPage() {
 
   useEffect(() => {
     if (!isLoading && user) {
-      router.replace('/');
+      window.location.href = '/';
     }
-  }, [isLoading, user, router]);
+  }, [isLoading, user]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -33,8 +33,8 @@ export default function LoginPage() {
 
       const data = await res.json();
       if (res.ok) {
-        router.push('/');
-        router.refresh();
+        await refreshAuth();
+        window.location.href = '/';
       } else {
         setError(data.error || 'Invalid credentials');
       }
