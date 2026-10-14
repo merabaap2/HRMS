@@ -1,10 +1,12 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 import Sidebar from './Sidebar';
 import Navbar from './Navbar';
 import FaceAttendanceModal from './FaceAttendanceModal';
 import GreetingPopupModal from './GreetingPopupModal';
+import { useAuth } from '@/lib/AuthContext';
 
 interface DashboardLayoutProps {
   title?: string;
@@ -19,8 +21,16 @@ export default function DashboardLayout({
   children,
   onRefreshData
 }: DashboardLayoutProps) {
+  const router = useRouter();
+  const { user, isLoading } = useAuth();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [faceModalOpen, setFaceModalOpen] = useState(false);
+
+  useEffect(() => {
+    if (!isLoading && !user) {
+      router.replace('/login');
+    }
+  }, [isLoading, user, router]);
 
   const handleFaceSuccess = () => {
     if (onRefreshData) {
