@@ -18,14 +18,15 @@ export default function PermissionsPage() {
   const [reason, setReason] = useState('');
   const [permQuota, setPermQuota] = useState(4);
   const [loading, setLoading] = useState(true);
+  const [reviewingId, setReviewingId] = useState<string | null>(null);
 
   const loadData = async () => {
     try {
       setLoading(true);
       const [empRes, permRes, setRes] = await Promise.all([
-        fetch('/api/employees'),
-        fetch('/api/permissions'),
-        fetch('/api/settings')
+        fetch('/api/employees', { cache: 'no-store' }),
+        fetch('/api/permissions', { cache: 'no-store' }),
+        fetch('/api/settings', { cache: 'no-store' })
       ]);
 
       const [empData, permData, setData] = await Promise.all([
@@ -82,6 +83,22 @@ export default function PermissionsPage() {
   };
 
   const handleReview = async (id: string, status: 'approved' | 'rejected') => {
+    setReviewingId(id);
+
+    // Optimistic UI update so the user immediately sees the change without lag
+    setPermissions(prev =>
+      prev.map(p =>
+        p.id === id
+          ? {
+              ...p,
+              status,
+              decidedBy: currentUser?.name || 'HR Administrator',
+              decidedAt: new Date().toISOString()
+            }
+          : p
+      )
+    );
+
     try {
       const res = await fetch('/api/permissions', {
         method: 'PATCH',
@@ -90,13 +107,17 @@ export default function PermissionsPage() {
       });
 
       if (res.ok) {
-        loadData();
+        await loadData();
       } else {
         const err = await res.json();
         alert(err.error || 'Failed to update status');
+        await loadData(); // Revert on error
       }
     } catch {
       alert('Network error');
+      await loadData();
+    } finally {
+      setReviewingId(null);
     }
   };
 
@@ -240,17 +261,21 @@ export default function PermissionsPage() {
                               <div style={{ display: 'inline-flex', gap: '0.35rem' }}>
                                 <button
                                   className="btn btn-sm btn-primary"
-                                  style={{ backgroundColor: '#10b981', borderColor: '#10b981' }}
+                                  style={{ backgroundColor: '#10b981', borderColor: '#10b981', opacity: reviewingId === p.id ? 0.7 : 1 }}
                                   onClick={() => handleReview(p.id, 'approved')}
+                                  disabled={reviewingId === p.id}
+                                  title="Approve this permission request"
                                 >
-                                  ✓ Approve
+                                  {reviewingId === p.id ? 'Saving...' : '✓ Approve'}
                                 </button>
                                 <button
                                   className="btn btn-sm btn-secondary"
-                                  style={{ color: '#ef4444', borderColor: '#fca5a5' }}
+                                  style={{ color: '#ef4444', borderColor: '#fca5a5', opacity: reviewingId === p.id ? 0.7 : 1 }}
                                   onClick={() => handleReview(p.id, 'rejected')}
+                                  disabled={reviewingId === p.id}
+                                  title="Reject this permission request"
                                 >
-                                  ✕ Reject
+                                  {reviewingId === p.id ? '...' : '✕ Reject'}
                                 </button>
                               </div>
                             ) : (

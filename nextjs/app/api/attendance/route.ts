@@ -3,6 +3,14 @@ import { getAttendance, saveAttendance, getEmployees, addActivity, readRawState,
 import { getSessionFromRequest } from '@/lib/auth';
 import { AttendanceRecord } from '@/types';
 
+export const dynamic = 'force-dynamic';
+
+const NO_CACHE_HEADERS = {
+  'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+  'Pragma': 'no-cache',
+  'Expires': '0'
+};
+
 function getTodayStr(): string {
   return new Date().toISOString().split('T')[0];
 }

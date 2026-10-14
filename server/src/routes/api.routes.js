@@ -142,6 +142,88 @@ function handleEntityRoutes(req, res, url) {
     return true;
   }
 
+  // /api/permissions
+  if (url === '/api/permissions') {
+    if (req.method === 'GET') {
+      const perms = parseJSON(db.getKey('hrms_permissions'));
+      sendJSON(res, 200, perms);
+      return true;
+    }
+    if (req.method === 'POST') {
+      let body = '';
+      req.on('data', c => { body += c; });
+      req.on('end', () => {
+        try {
+          const reqPerm = JSON.parse(body);
+          const perms = parseJSON(db.getKey('hrms_permissions'));
+          const newPerm = {
+            id: `perm_${Date.now()}`,
+            ...reqPerm,
+            status: 'pending'
+          };
+          perms.unshift(newPerm);
+          db.setKey('hrms_permissions', JSON.stringify(perms));
+          sendJSON(res, 201, { success: true, permission: newPerm });
+        } catch {
+          sendJSON(res, 400, { error: 'Invalid JSON payload' });
+        }
+      });
+      return true;
+    }
+    if (req.method === 'PATCH') {
+      let body = '';
+      req.on('data', c => { body += c; });
+      req.on('end', () => {
+        try {
+          const { id, status } = JSON.parse(body);
+          const perms = parseJSON(db.getKey('hrms_permissions'));
+          const perm = perms.find(p => p.id === id);
+          if (perm) {
+            perm.status = status;
+            perm.decidedBy = 'HR Administrator';
+            perm.decidedAt = new Date().toISOString();
+            db.setKey('hrms_permissions', JSON.stringify(perms));
+            return sendJSON(res, 200, { success: true, permission: perm });
+          }
+          sendJSON(res, 404, { error: 'Permission not found' });
+        } catch {
+          sendJSON(res, 400, { error: 'Bad request' });
+        }
+      });
+      return true;
+    }
+  }
+
+  // /api/resignations
+  if (url === '/api/resignations') {
+    if (req.method === 'GET') {
+      const resignations = parseJSON(db.getKey('hrms_resignations'));
+      sendJSON(res, 200, resignations);
+      return true;
+    }
+    if (req.method === 'PATCH') {
+      let body = '';
+      req.on('data', c => { body += c; });
+      req.on('end', () => {
+        try {
+          const { id, status } = JSON.parse(body);
+          const resignations = parseJSON(db.getKey('hrms_resignations'));
+          const r = resignations.find(item => item.id === id);
+          if (r) {
+            r.status = status;
+            r.decidedBy = 'HR Administrator';
+            db.setKey('hrms_resignations', JSON.stringify(resignations));
+            return sendJSON(res, 200, { success: true, resignation: r });
+          }
+          sendJSON(res, 404, { error: 'Resignation not found' });
+        } catch {
+          sendJSON(res, 400, { error: 'Bad request' });
+        }
+      });
+      return true;
+    }
+  }
+
   return false;
 }
 

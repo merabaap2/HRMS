@@ -3,26 +3,34 @@ import { getPermissions, savePermissions, getEmployees, addActivity, readRawStat
 import { getSessionFromRequest } from '@/lib/auth';
 import { PermissionRecord } from '@/types';
 
+export const dynamic = 'force-dynamic';
+
+const NO_CACHE_HEADERS = {
+  'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+  'Pragma': 'no-cache',
+  'Expires': '0'
+};
+
 export async function GET(req: NextRequest) {
   const session = getSessionFromRequest(req);
   if (!session) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401, headers: NO_CACHE_HEADERS });
   }
 
   const permissions = getPermissions();
 
   if (session.role === 'EMPLOYEE') {
     const myPerms = permissions.filter(p => p.empId === session.empId);
-    return NextResponse.json(myPerms);
+    return NextResponse.json(myPerms, { headers: NO_CACHE_HEADERS });
   }
 
   const { searchParams } = new URL(req.url);
   const empId = searchParams.get('empId');
   if (empId) {
-    return NextResponse.json(permissions.filter(p => p.empId === empId));
+    return NextResponse.json(permissions.filter(p => p.empId === empId), { headers: NO_CACHE_HEADERS });
   }
 
-  return NextResponse.json(permissions);
+  return NextResponse.json(permissions, { headers: NO_CACHE_HEADERS });
 }
 
 export async function POST(req: NextRequest) {

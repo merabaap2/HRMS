@@ -13,14 +13,15 @@ export default function LeavesPage() {
   const [leaves, setLeaves] = useState<LeaveRequest[]>([]);
   const [applyModalOpen, setApplyModalOpen] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [reviewingId, setReviewingId] = useState<string | null>(null);
 
   const loadData = async () => {
     try {
       setLoading(true);
 
       const [empRes, lvRes] = await Promise.all([
-        fetch('/api/employees'),
-        fetch('/api/leaves')
+        fetch('/api/employees', { cache: 'no-store' }),
+        fetch('/api/leaves', { cache: 'no-store' })
       ]);
 
       const [empData, lvData] = await Promise.all([
@@ -43,6 +44,17 @@ export default function LeavesPage() {
 
   // Admin approval / rejection
   const handleReview = async (id: string, status: 'approved' | 'rejected') => {
+    setReviewingId(id);
+
+    // Optimistic UI update
+    setLeaves(prev =>
+      prev.map(l =>
+        l.id === id
+          ? { ...l, status, reviewedBy: currentUser?.name || 'HR Administrator', reviewedAt: new Date().toISOString() }
+          : l
+      )
+    );
+
     try {
       const res = await fetch('/api/leaves', {
         method: 'PATCH',
@@ -51,32 +63,42 @@ export default function LeavesPage() {
       });
 
       if (res.ok) {
-        loadData();
+        await loadData();
       } else {
         const err = await res.json();
         alert(err.error || 'Review action failed');
+        await loadData();
       }
     } catch {
       alert('Network error');
+      await loadData();
+    } finally {
+      setReviewingId(null);
     }
   };
 
   // Employee cancellation of own pending request
   const handleCancelLeave = async (id: string) => {
     if (!confirm('Are you sure you want to cancel this pending leave requisition?')) return;
+    
+    // Optimistic removal
+    setLeaves(prev => prev.filter(l => l.id !== id));
+
     try {
       const res = await fetch(`/api/leaves?id=${id}`, {
         method: 'DELETE'
       });
 
       if (res.ok) {
-        loadData();
+        await loadData();
       } else {
         const err = await res.json();
         alert(err.error || 'Failed to cancel leave');
+        await loadData();
       }
     } catch {
       alert('Network error');
+      await loadData();
     }
   };
 
@@ -275,17 +297,21 @@ export default function LeavesPage() {
                               <div style={{ display: 'inline-flex', gap: '0.4rem' }}>
                                 <button
                                   className="btn btn-sm btn-primary"
-                                  style={{ backgroundColor: '#10b981', borderColor: '#10b981' }}
+                                  style={{ backgroundColor: '#10b981', borderColor: '#10b981', opacity: reviewingId === lv.id ? 0.7 : 1 }}
                                   onClick={() => handleReview(lv.id, 'approved')}
+                                  disabled={reviewingId === lv.id}
+                                  title="Approve staff leave request"
                                 >
-                                  ✓ Approve
+                                  {reviewingId === lv.id ? 'Saving...' : '✓ Approve'}
                                 </button>
                                 <button
                                   className="btn btn-sm btn-secondary"
-                                  style={{ color: '#ef4444', borderColor: '#fca5a5' }}
+                                  style={{ color: '#ef4444', borderColor: '#fca5a5', opacity: reviewingId === lv.id ? 0.7 : 1 }}
                                   onClick={() => handleReview(lv.id, 'rejected')}
+                                  disabled={reviewingId === lv.id}
+                                  title="Reject staff leave request"
                                 >
-                                  ✕ Reject
+                                  {reviewingId === lv.id ? '...' : '✕ Reject'}
                                 </button>
                               </div>
                             </td>

@@ -7,11 +7,19 @@ import {
 import { getSessionFromRequest } from '@/lib/auth';
 import { Designation } from '@/types';
 
+export const dynamic = 'force-dynamic';
+
+const NO_CACHE_HEADERS = {
+  'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+  'Pragma': 'no-cache',
+  'Expires': '0'
+};
+
 export async function GET(req: NextRequest) {
   const departments = getDepartmentsList();
   const designations = getDesignationsList();
   const employees = getEmployees();
-  return NextResponse.json({ departments, designations, employees });
+  return NextResponse.json({ departments, designations, employees }, { headers: NO_CACHE_HEADERS });
 }
 
 export async function POST(req: NextRequest) {

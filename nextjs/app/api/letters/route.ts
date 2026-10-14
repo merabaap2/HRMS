@@ -3,26 +3,34 @@ import { getLetters, saveLetters, getEmployees, addActivity } from '@/lib/db';
 import { getSessionFromRequest } from '@/lib/auth';
 import { LetterRecord } from '@/types';
 
+export const dynamic = 'force-dynamic';
+
+const NO_CACHE_HEADERS = {
+  'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+  'Pragma': 'no-cache',
+  'Expires': '0'
+};
+
 export async function GET(req: NextRequest) {
   const session = getSessionFromRequest(req);
   if (!session) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401, headers: NO_CACHE_HEADERS });
   }
 
   const letters = getLetters();
 
   if (session.role === 'EMPLOYEE') {
     const myLetters = letters.filter(l => l.empId === session.empId);
-    return NextResponse.json(myLetters);
+    return NextResponse.json(myLetters, { headers: NO_CACHE_HEADERS });
   }
 
   const { searchParams } = new URL(req.url);
   const empId = searchParams.get('empId');
   if (empId) {
-    return NextResponse.json(letters.filter(l => l.empId === empId));
+    return NextResponse.json(letters.filter(l => l.empId === empId), { headers: NO_CACHE_HEADERS });
   }
 
-  return NextResponse.json(letters);
+  return NextResponse.json(letters, { headers: NO_CACHE_HEADERS });
 }
 
 export async function POST(req: NextRequest) {

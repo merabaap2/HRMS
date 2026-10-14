@@ -7,12 +7,25 @@ import {
   PermissionRecord, LetterRecord, ResignationRecord, ServiceRecord
 } from '../types';
 
-function getDbPath(): string {
+import os from 'os';
+
+// Global in-memory cache to guarantee state consistency across all API routes within container
+declare global {
+  var __hrms_db_cache__: Record<string, string> | undefined;
+}
+
+function getWritableTmpPath(): string {
+  return path.join(os.tmpdir(), 'hrms_data.json');
+}
+
+function getSeedDbPath(): string {
   const candidatePaths = [
     path.resolve(process.cwd(), 'data', 'data.json'),
+    path.resolve(process.cwd(), 'nextjs', 'data', 'data.json'),
     path.resolve(process.cwd(), '..', 'data', 'data.json'),
     path.resolve(__dirname, '../../data/data.json'),
-    path.resolve(__dirname, '../../../data/data.json')
+    path.resolve(__dirname, '../../../data/data.json'),
+    path.resolve(__dirname, '../data/data.json')
   ];
 
   for (const p of candidatePaths) {
@@ -21,48 +34,85 @@ function getDbPath(): string {
     }
   }
 
-  const defaultPath = path.resolve(process.cwd(), 'data', 'data.json');
-  const dir = path.dirname(defaultPath);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-  return defaultPath;
+  return path.resolve(process.cwd(), 'data', 'data.json');
 }
 
 export function readRawState(): Record<string, string> {
-  const dbPath = getDbPath();
-  try {
-    if (!fs.existsSync(dbPath)) return {};
-    const content = fs.readFileSync(dbPath, 'utf8');
-    return JSON.parse(content);
-  } catch (err) {
-    console.error('Error reading database file:', err);
-    return {};
+  // 1. Return in-memory global cache if already loaded
+  if (globalThis.__hrms_db_cache__ && Object.keys(globalThis.__hrms_db_cache__).length > 0) {
+    return globalThis.__hrms_db_cache__;
   }
+
+  // 2. Try loading from writable /tmp path (persists across warm lambdas on Vercel)
+  const tmpPath = getWritableTmpPath();
+  try {
+    if (fs.existsSync(tmpPath)) {
+      const content = fs.readFileSync(tmpPath, 'utf8');
+      const parsed = JSON.parse(content);
+      if (parsed && typeof parsed === 'object' && Object.keys(parsed).length > 0) {
+        globalThis.__hrms_db_cache__ = parsed;
+        return parsed;
+      }
+    }
+  } catch {}
+
+  // 3. Fallback to seed repository database file
+  const seedPath = getSeedDbPath();
+  try {
+    if (fs.existsSync(seedPath)) {
+      const content = fs.readFileSync(seedPath, 'utf8');
+      const parsed = JSON.parse(content);
+      globalThis.__hrms_db_cache__ = parsed;
+
+      // Seed /tmp immediately so subsequent writes/reads succeed
+      try {
+        fs.writeFileSync(tmpPath, content, 'utf8');
+      } catch {}
+
+      return parsed;
+    }
+  } catch (err) {
+    console.error('Error reading seed database file:', err);
+  }
+
+  globalThis.__hrms_db_cache__ = {};
+  return {};
 }
 
 export function writeRawState(state: Record<string, string>): void {
-  const dbPath = getDbPath();
+  // 1. Immediately update global memory cache
+  globalThis.__hrms_db_cache__ = { ...state };
+  const jsonStr = JSON.stringify(state, null, 2);
+
+  // 2. Always write to /tmp (guaranteed writable on Vercel, AWS Lambda, Linux, Windows, Mac)
+  const tmpPath = getWritableTmpPath();
   try {
-    const dir = path.dirname(dbPath);
+    fs.writeFileSync(tmpPath, jsonStr, 'utf8');
+  } catch (tmpErr) {
+    console.warn('Could not write to tmp:', tmpErr);
+  }
+
+  // 3. Persist to project data.json file if filesystem is writable (local dev)
+  const seedPath = getSeedDbPath();
+  try {
+    const dir = path.dirname(seedPath);
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }
-    const tempPath = `${dbPath}.tmp`;
-    const jsonStr = JSON.stringify(state, null, 2);
+    const tempPath = `${seedPath}.tmp`;
     fs.writeFileSync(tempPath, jsonStr, 'utf8');
-    fs.renameSync(tempPath, dbPath);
+    fs.renameSync(tempPath, seedPath);
 
-    const mirrorPath = dbPath.includes('nextjs')
-      ? path.resolve(dbPath, '../../data/data.json')
-      : path.resolve(dbPath, '../nextjs/data/data.json');
-    if (mirrorPath !== dbPath && fs.existsSync(path.dirname(mirrorPath))) {
+    const mirrorPath = seedPath.includes('nextjs')
+      ? path.resolve(seedPath, '../../data/data.json')
+      : path.resolve(seedPath, '../nextjs/data/data.json');
+    if (mirrorPath !== seedPath && fs.existsSync(path.dirname(mirrorPath))) {
       try {
         fs.writeFileSync(mirrorPath, jsonStr, 'utf8');
       } catch {}
     }
   } catch (err) {
-    console.error('Error writing database file:', err);
+    // Expected on Vercel / read-only serverless disk — tmp and memory cache already secured!
   }
 }
 
@@ -441,10 +491,12 @@ export function saveMenuPrivileges(privs: { defaults: Record<string, boolean>; b
 // PERMISSIONS & ON-DUTY (OD)
 export function getPermissions(): PermissionRecord[] {
   const state = readRawState();
-  try {
-    const list = JSON.parse(state['hrms_permissions'] || '[]');
-    if (list.length > 0) return list;
-  } catch {}
+  if (state['hrms_permissions'] !== undefined) {
+    try {
+      const list = JSON.parse(state['hrms_permissions']);
+      if (Array.isArray(list)) return list;
+    } catch {}
+  }
 
   return [
     {
@@ -531,10 +583,12 @@ export function saveLetters(letters: LetterRecord[]): void {
 // RESIGNATIONS
 export function getResignations(): ResignationRecord[] {
   const state = readRawState();
-  try {
-    const list = JSON.parse(state['hrms_resignations'] || '[]');
-    if (list.length > 0) return list;
-  } catch {}
+  if (state['hrms_resignations'] !== undefined) {
+    try {
+      const list = JSON.parse(state['hrms_resignations']);
+      if (Array.isArray(list)) return list;
+    } catch {}
+  }
 
   return [
     {

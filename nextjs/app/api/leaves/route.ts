@@ -3,21 +3,29 @@ import { getLeaves, saveLeaves, getEmployees, addActivity, readRawState } from '
 import { getSessionFromRequest } from '@/lib/auth';
 import { LeaveRequest } from '@/types';
 
+export const dynamic = 'force-dynamic';
+
+const NO_CACHE_HEADERS = {
+  'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+  'Pragma': 'no-cache',
+  'Expires': '0'
+};
+
 export async function GET(req: NextRequest) {
   const session = getSessionFromRequest(req);
   const leaves = getLeaves();
 
   if (session && session.role === 'EMPLOYEE') {
-    return NextResponse.json(leaves.filter(l => l.empId === session.empId));
+    return NextResponse.json(leaves.filter(l => l.empId === session.empId), { headers: NO_CACHE_HEADERS });
   }
 
   const { searchParams } = new URL(req.url);
   const empId = searchParams.get('empId');
   if (empId) {
-    return NextResponse.json(leaves.filter(l => l.empId === empId));
+    return NextResponse.json(leaves.filter(l => l.empId === empId), { headers: NO_CACHE_HEADERS });
   }
 
-  return NextResponse.json(leaves);
+  return NextResponse.json(leaves, { headers: NO_CACHE_HEADERS });
 }
 
 export async function POST(req: NextRequest) {

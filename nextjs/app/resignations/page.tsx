@@ -19,6 +19,7 @@ export default function ResignationsPage() {
   const [noticeDays, setNoticeDays] = useState(30);
   const [handoverNotes, setHandoverNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [reviewingId, setReviewingId] = useState<string | null>(null);
 
   useEffect(() => {
     if (currentEmp?.id) {
@@ -30,8 +31,8 @@ export default function ResignationsPage() {
     try {
       setLoading(true);
       const [empRes, resRes] = await Promise.all([
-        fetch('/api/employees'),
-        fetch('/api/resignations')
+        fetch('/api/employees', { cache: 'no-store' }),
+        fetch('/api/resignations', { cache: 'no-store' })
       ]);
 
       if (empRes.ok) {
@@ -100,6 +101,17 @@ export default function ResignationsPage() {
     const actionWord = status === 'approved' ? 'approve' : 'reject';
     if (!confirm(`Are you sure you want to ${actionWord} this resignation request?`)) return;
 
+    setReviewingId(id);
+
+    // Optimistic UI update
+    setResignations(prev =>
+      prev.map(r =>
+        r.id === id
+          ? { ...r, status, decidedBy: currentUser?.name || 'HR Administrator' }
+          : r
+      )
+    );
+
     try {
       const res = await fetch('/api/resignations', {
         method: 'PATCH',
@@ -108,13 +120,17 @@ export default function ResignationsPage() {
       });
 
       if (res.ok) {
-        loadData();
+        await loadData();
       } else {
         const err = await res.json();
         alert(err.error || 'Failed to update resignation status');
+        await loadData();
       }
     } catch {
       alert('Network error updating status');
+      await loadData();
+    } finally {
+      setReviewingId(null);
     }
   };
 
@@ -323,15 +339,20 @@ export default function ResignationsPage() {
                                   <button
                                     className="btn btn-sm btn-primary"
                                     onClick={() => handleReview(r.id, 'approved')}
+                                    disabled={reviewingId === r.id}
+                                    style={{ opacity: reviewingId === r.id ? 0.7 : 1 }}
+                                    title="Approve resignation request"
                                   >
-                                    ✓ Approve
+                                    {reviewingId === r.id ? 'Saving...' : '✓ Approve'}
                                   </button>
                                   <button
                                     className="btn btn-sm btn-secondary"
-                                    style={{ color: '#dc2626' }}
+                                    style={{ color: '#dc2626', opacity: reviewingId === r.id ? 0.7 : 1 }}
                                     onClick={() => handleReview(r.id, 'rejected')}
+                                    disabled={reviewingId === r.id}
+                                    title="Reject resignation request"
                                   >
-                                    ✕ Reject
+                                    {reviewingId === r.id ? '...' : '✕ Reject'}
                                   </button>
                                 </div>
                               ) : (

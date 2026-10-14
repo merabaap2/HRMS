@@ -27,6 +27,14 @@ const DEFAULT_PERM_POLICY = { quota: 4 };
 const DEFAULT_POPUP_CFG = { autoSecs: 30 };
 const DEFAULT_GEOFENCE = { lat: 17.4486, lng: 78.3908, radius: 200 };
 const DEFAULT_FACE_CFG = { mode: 'off', threshold: 0.5 };
+export const dynamic = 'force-dynamic';
+
+const NO_CACHE_HEADERS = {
+  'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+  'Pragma': 'no-cache',
+  'Expires': '0'
+};
+
 const DEFAULT_BIO_CFG = { photoFallback: true, emps: {} };
 
 export async function GET() {
@@ -71,7 +79,7 @@ export async function GET() {
       leaves: leaves.length,
       attendance: attendance.length
     }
-  });
+  }, { headers: NO_CACHE_HEADERS });
 }
 
 export async function POST(req: NextRequest) {

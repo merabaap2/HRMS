@@ -8,6 +8,14 @@ import {
 import { getSessionFromRequest } from '@/lib/auth';
 import { PerformanceCycle, PerformanceGoal, AppraisalReview } from '@/types';
 
+export const dynamic = 'force-dynamic';
+
+const NO_CACHE_HEADERS = {
+  'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+  'Pragma': 'no-cache',
+  'Expires': '0'
+};
+
 export async function GET(req: NextRequest) {
   const session = getSessionFromRequest(req);
   const cycles = getPerformanceCycles();

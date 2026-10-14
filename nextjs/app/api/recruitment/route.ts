@@ -3,10 +3,18 @@ import { getJobs, saveJobs, getCandidates, saveCandidates, getEmployees, saveEmp
 import { getSessionFromRequest } from '@/lib/auth';
 import { JobOpening, Candidate, Employee } from '@/types';
 
+export const dynamic = 'force-dynamic';
+
+const NO_CACHE_HEADERS = {
+  'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+  'Pragma': 'no-cache',
+  'Expires': '0'
+};
+
 export async function GET(req: NextRequest) {
   const jobs = getJobs();
   const candidates = getCandidates();
-  return NextResponse.json({ jobs, candidates });
+  return NextResponse.json({ jobs, candidates }, { headers: NO_CACHE_HEADERS });
 }
 
 export async function POST(req: NextRequest) {

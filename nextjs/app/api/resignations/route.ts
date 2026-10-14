@@ -3,20 +3,28 @@ import { getResignations, saveResignations, getEmployees, addActivity } from '@/
 import { getSessionFromRequest } from '@/lib/auth';
 import { ResignationRecord } from '@/types';
 
+export const dynamic = 'force-dynamic';
+
+const NO_CACHE_HEADERS = {
+  'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+  'Pragma': 'no-cache',
+  'Expires': '0'
+};
+
 export async function GET(req: NextRequest) {
   const session = getSessionFromRequest(req);
   if (!session) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401, headers: NO_CACHE_HEADERS });
   }
 
   const resignations = getResignations();
 
   if (session.role === 'EMPLOYEE') {
     const myResignations = resignations.filter(r => r.empId === session.empId);
-    return NextResponse.json(myResignations);
+    return NextResponse.json(myResignations, { headers: NO_CACHE_HEADERS });
   }
 
-  return NextResponse.json(resignations);
+  return NextResponse.json(resignations, { headers: NO_CACHE_HEADERS });
 }
 
 export async function POST(req: NextRequest) {
